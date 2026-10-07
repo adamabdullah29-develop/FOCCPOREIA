@@ -49,7 +49,22 @@ function foccShowApp(session){
 
   if (!foccBooted){
     foccBooted = true;
-    initFOCC();
+    // ✅ FIX: catch error supaya initFOCC tak senyap gagal
+    initFOCC().catch(err => {
+      console.error('initFOCC failed:', err);
+      // Jangan redirect ke login — tunjuk error saja
+      const content = document.getElementById('content');
+      if (content){
+        content.innerHTML = `
+          <div style="padding:40px;text-align:center;">
+            <div style="font-size:32px;margin-bottom:10px;">&#9888;</div>
+            <div style="font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--navy-900);margin-bottom:6px;">Init failed</div>
+            <div style="color:var(--muted);font-size:13px;max-width:420px;margin:0 auto 16px;">${escapeHtml(String(err && err.message || err))}</div>
+            <button class="btn primary" onclick="location.reload()">Reload</button>
+          </div>
+        `;
+      }
+    });
     bugBadgeStart();
   }
 
@@ -219,8 +234,6 @@ async function loginFOCC(){
    LOGOUT
 ============================================================= */
 async function logoutFOCC(){
-  /* 1) UI DULU — sinkron, tiada await. Skrin login mesti keluar serta-merta,
-        tak kira network atau langkah di bawah gagal. */
   foccBooted = false;
   try{ foccShowLogin('', false); }catch(e){ console.error('logout: show login failed', e); }
   try{ history.replaceState(null, '', '#/login'); }catch(e){}
@@ -231,15 +244,12 @@ async function logoutFOCC(){
     if (passEl) passEl.value = '';
   }catch(e){}
 
-  /* 2) Bersihkan state — setiap satu diasingkan. */
   try{ bugBadgeStop(); }catch(e){ console.error('logout: bugBadgeStop failed', e); }
   try{ clearTenantRuntimeState(); }catch(e){ console.error('logout: clearTenantRuntimeState failed', e); }
 
-  /* 3) Baru sentuh session + network. */
   try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
   try{ if (FOCC_SUPABASE) await FOCC_SUPABASE.auth.signOut(); }catch(e){}
 
-  /* 4) Kunci: pastikan skrin login KEKAL di hadapan. */
   try{ foccShowLogin('', false); }catch(e){}
 }
 
@@ -269,6 +279,9 @@ function foccShowPublicScreen(){
 
 /* ============================================================
    AUTO LOGIN — session 24 jam
+   ✅ FIX: Jangan redirect ke login bila:
+     - profile refresh gagal sebab network
+     - session Supabase belum ready (race condition)
 ============================================================= */
 async function foccAutoLogin(){
   const raw = localStorage.getItem(FOCC_SESSION_KEY);
@@ -293,18 +306,28 @@ async function foccAutoLogin(){
     return;
   }
 
-  /* getSession() baca token dari localStorage — laju, tiada network
-     melainkan token perlu refresh. */
+  /* ✅ FIX #1: Retry getSession sampai 3 kali — handle race condition
+     bila page baru reload dan Supabase belum restore token dari storage. */
   let authUser = null;
-  try{
-    if (FOCC_SUPABASE){
-      const sessRes = await FOCC_SUPABASE.auth.getSession();
-      authUser = (sessRes && sessRes.data && sessRes.data.session)
-        ? sessRes.data.session.user : null;
+  for (let attempt = 0; attempt < 3; attempt++){
+    try{
+      if (FOCC_SUPABASE){
+        const sessRes = await FOCC_SUPABASE.auth.getSession();
+        authUser = (sessRes && sessRes.data && sessRes.data.session)
+          ? sessRes.data.session.user : null;
+        if (authUser) break;
+      }
+    }catch(e){
+      console.warn('getSession attempt', attempt + 1, 'failed:', e);
     }
-  }catch(e){ authUser = null; }
+    // Tunggu 200ms sebelum retry
+    if (attempt < 2) await new Promise(r => setTimeout(r, 200));
+  }
 
+  /* ✅ FIX #2: Kalau authUser null selepas 3 retry, BARU redirect login.
+     Sebelum ni, redirect terus bila null → tu punca auto-logout. */
   if (!authUser){
+    console.warn('foccAutoLogin: no auth user after 3 retries, showing login');
     localStorage.removeItem(FOCC_SESSION_KEY);
     foccBooted = false;
     foccShowPublicScreen();
@@ -314,22 +337,39 @@ async function foccAutoLogin(){
   const emailInput = document.getElementById('foccEmailInput');
   if (emailInput) emailInput.value = session.email;
 
-  // Tunjuk dashboard SERTA-MERTA dari cache
-  await syncProviderFromSession(session);
+  // ✅ FIX #3: syncProviderFromSession — wrap try/catch supaya tak block showApp
+  try {
+    await syncProviderFromSession(session);
+  } catch(e){
+    console.warn('syncProviderFromSession failed (non-fatal):', e);
+  }
   foccShowApp(session);
 
+  /* Refresh profile dalam background — JANGAN redirect login kalau gagal. */
   try{
     const profRes = await FOCC_SUPABASE
       .from('profiles').select('*').eq('id', authUser.id).single();
 
     const profile = profRes.data;
 
-    let allowed = !!profile && String(profile.status || '') === 'Active';
+    /* ✅ FIX #4: Kalau profile null sebab network hiccup, KEKAL dashboard.
+       Cuma redirect login kalau betul-betul suspended/expired. */
+    if (!profile){
+      console.warn('Profile refresh returned null — keeping cached session');
+      return;
+    }
+
+    let allowed = String(profile.status || '') === 'Active';
 
     let creds = { googleSheetId: '', appsScriptUrl: '', status: 'Active' };
     if (allowed && profile.company_id){
-      creds = await fetchCompanySheetCreds(profile.company_id);
-      if (creds.status !== 'Active') allowed = false;
+      try {
+        creds = await fetchCompanySheetCreds(profile.company_id);
+        if (creds.status !== 'Active') allowed = false;
+      } catch(e){
+        console.warn('fetchCompanySheetCreds failed — keeping cached session:', e);
+        // Jangan mark as not allowed — network error je
+      }
     }
 
     if (allowed && profile.expiry_date){
@@ -371,13 +411,16 @@ async function foccAutoLogin(){
         `;
       }
     } else {
+      // Betul-betul suspended atau expired
+      console.warn('Session invalidated by profile check — logging out');
       localStorage.removeItem(FOCC_SESSION_KEY);
       foccBooted = false;
       try{ await FOCC_SUPABASE.auth.signOut(); }catch(e){}
       foccShowPublicScreen();
     }
   } catch(err){
-    // Network gagal — kekalkan session yang dah dipulihkan tadi.
+    // ✅ FIX #5: Network error → KEKAL dashboard, jangan logout
+    console.warn('Profile refresh network error — keeping cached session:', err);
   }
 }
 

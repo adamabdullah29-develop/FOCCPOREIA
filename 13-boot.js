@@ -234,7 +234,11 @@ function reloadToRoute(routeKey){
   } catch(e){}
   try { history.replaceState(null, '', '#/' + routeKey); }
   catch(e){ location.hash = '#/' + routeKey; }
-  location.reload();
+
+  // ✅ FIX: Guna goTo() — elak full page reload yang hilangkan session.
+  // Sebelum ni location.reload() menyebabkan setiap klik nav hilang session
+  // dan redirect ke login page.
+  goTo(routeKey);
 }
 
 function buildNavItemEl(item){
