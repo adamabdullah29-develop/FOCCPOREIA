@@ -216,5 +216,3 @@ const NAV_STRUCTURE = [
     {key:'systemHealth', label:'System Health'},
   ]},
 ];
-
-let currentRoute = 'overview';
