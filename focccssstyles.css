@@ -1,4 +1,3 @@
-<style>
 /* ============================================================
    SECTION 2: CSS STYLES
    2.1 Variables | 2.2 Sidebar | 2.3 Main Area | 2.4 Cards/KPIs
@@ -3129,5 +3128,3 @@ html.theme-dark .pm-tl-pick-row b{color:#e6edf3;}
 .pm-tl-pick-row.is-locked input{cursor:not-allowed;}
 .pm-tl-pick-row.is-locked small{color:#a33a30;font-weight:600;}
 html.theme-dark .pm-tl-pick-row.is-locked{background:#0d1218;}
-
-</style>
