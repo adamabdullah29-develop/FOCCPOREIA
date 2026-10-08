@@ -2594,7 +2594,7 @@ a.focc-lp-contact-cta{text-decoration:none;}
 
 /* ---- CONTACT ---- */
 .focc-lp-contact-section{position:relative;min-height:560px;display:flex;align-items:center;overflow:hidden;}
-.focc-lp-contact-bg{position:absolute;inset:0;background:url('./contact-bg.png.jpeg') center center/cover no-repeat;filter:blur(3px) brightness(1.05);transform:scale(1.05);}
+.focc-lp-contact-bg{position:absolute;inset:0;background:url('contact-bg.png.jpeg') center center/cover no-repeat;filter:blur(3px) brightness(1.05);transform:scale(1.05);}
 .focc-lp-contact-bg::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(8,21,33,.82) 0%,rgba(12,32,50,.72) 40%,rgba(18,49,74,.55) 100%);}
 .focc-lp-contact-inner{position:relative;z-index:2;max-width:600px;padding:80px 60px;animation:foccLpFadeUp .8s cubic-bezier(.2,.8,.2,1) both;}
 .focc-lp-contact-badge{display:inline-flex;align-items:center;gap:8px;padding:7px 18px;border-radius:999px;background:rgba(27,166,163,.15);border:1px solid rgba(27,166,163,.3);font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--lp-teal-light);margin-bottom:20px;}
