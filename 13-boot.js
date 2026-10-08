@@ -5,6 +5,15 @@
    PATCH v2 (2026-02):
    - auth listener: guard guna `event|session` (bukan event sahaja)
      supaya TOKEN_REFRESHED → SIGNED_OUT → TOKEN_REFRESHED semua diproses
+
+   PATCH v3 (2026-02):
+   - retry sampai SDK ready — CDN script (supabase-js) kadang load
+     LEPAS 13-boot.js jalan.
+
+   PATCH v4 (2026-10):
+   - SIGNED_OUT grace period 3s — SDK init race buang session semasa
+     page refresh. Listener abaikan SIGNED_OUT dalam grace period
+     kalau FOCC_SESSION_KEY masih ada dalam localStorage.
    =========================================================================
    Bahagian A — ROUTES + NAV_STRUCTURE
    Bahagian B — buildNav, goTo, initFOCC, theme, event listeners
@@ -160,8 +169,6 @@ const ROUTES = {
 const NAV_STRUCTURE = [
   { key:'overview', label:'Main Menu', standalone:true, dot:'var(--teal)' },
 
-  // "Operations" replaces the old flat "Operation" group with the new
-  // per-fleet-type nested structure.
   { group:'Operations', dot:'#1aa39a', subgroups:[
     { label:'Tipper Operations', items:[
       {key:'tipperOpsDashboard', label:'Dashboard'},
@@ -598,17 +605,23 @@ async function initFOCC(){
    PATCH v2: guard guna `event|session` — bukan event sahaja.
    Punca: TOKEN_REFRESHED → SIGNED_OUT → TOKEN_REFRESHED akan
    skip event ke-3 kalau guard guna `event === lastEvent`.
-   ============================================================ */
-/* ============================================================
-   FOCC AUTH STATE LISTENER
-   Reaktif bila Supabase SDK ready / token berubah.
 
    PATCH v3: retry sampai SDK ready — kerana CDN script
    (supabase-js) kadang load LEPAS 13-boot.js jalan.
-   ============================================================ */
+
+   PATCH v4: grace period 3 detik untuk SIGNED_OUT.
+   Punca: Supabase SDK fire SIGNED_OUT semasa init kalau
+   refresh_token gagal (race condition), buang session yang
+   sepatutnya masih sah. Dalam grace period, abaikan SIGNED_OUT
+   kalau FOCC_SESSION_KEY masih ada dalam localStorage.
+============================================================= */
 (function(){
   let lastKey = '';
   let listenerRegistered = false;
+
+  // ⬇️ PATCH v4: grace period untuk SIGNED_OUT semasa init
+  const BOOT_TIME = Date.now();
+  const SIGNED_OUT_GRACE_MS = 3000;
 
   function attachAuthListener(){
     if (listenerRegistered) return true;
@@ -624,6 +637,14 @@ async function initFOCC(){
       lastKey = key;
 
       if (event === 'SIGNED_OUT'){
+        // ⬇️ PATCH v4: abaikan SIGNED_OUT dalam grace period kalau ada session tersimpan
+        const elapsed = Date.now() - BOOT_TIME;
+        const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
+        if (elapsed < SIGNED_OUT_GRACE_MS && hasLocal){
+          console.warn('[FOCC] SIGNED_OUT dalam grace period — abaikan (SDK init race). Elapsed:', elapsed, 'ms');
+          return;
+        }
+
         try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
         if (foccBooted){
           foccBooted = false;

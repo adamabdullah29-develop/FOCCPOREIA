@@ -7,6 +7,13 @@
    - Guard foccAutoLoginRunning → elak double-init
    - Bezakan session-invalid (logout) vs network hiccup (fallback)
    - Buang foccShowLogin() berulang dalam logoutFOCC()
+
+   PATCH v3 (2026-10):
+   - Regex isSessionInvalid lebih ketat — buang 'invalid' generik
+     (boleh false-positive). Hanya match refresh/token/jwt/session
+     yang benar-benar bermakna session mati.
+   - MAX_TRIES naik 5 → 8, delay 500ms → 400ms (total 3.2s).
+   - Diagnostic log tambahan untuk debug race condition refresh.
    ========================================================================= */
 
 /* ============================================================
@@ -289,10 +296,13 @@ function foccShowPublicScreen(){
 
 /* ============================================================
    AUTO LOGIN — session 24 jam
-   PATCH: 
+
+   PATCH v3:
    - Guard foccAutoLoginRunning (elak double-init)
-   - Retry getSession 5x
-   - Bezakan session-invalid (logout) vs network hiccup (fallback)
+   - Retry getSession 8x @ 400ms (total 3.2s)
+   - Regex isSessionInvalid lebih KETAT — buang 'invalid' generik
+     yang boleh false-positive dan logout user secara tak sengaja
+   - Diagnostic log tambahan
 ============================================================= */
 async function foccAutoLogin(){
   // ── Guard: elak dua panggilan serentak ──
@@ -306,6 +316,9 @@ async function foccAutoLogin(){
     console.log('[FOCC] autoLogin: start');
 
     const raw = localStorage.getItem(FOCC_SESSION_KEY);
+    console.log('[FOCC] autoLogin: FOCC_SESSION_KEY present:', !!raw);
+    console.log('[FOCC] autoLogin: FOCC_SUPABASE ready:', !!FOCC_SUPABASE);
+
     if (!raw){
       console.log('[FOCC] autoLogin: no session → login screen');
       foccShowPublicScreen();
@@ -333,12 +346,12 @@ async function foccAutoLogin(){
       return;
     }
 
-    /* ✅ FIX: Retry getSession sampai 5 kali dengan delay 500ms
-       Supabase SDK kadang belum ready bila page refresh */
+    /* Retry getSession sampai 8 kali dengan delay 400ms
+       (total 3.2s) — Supabase SDK kadang belum ready bila refresh */
     let authUser = null;
     let lastErr = null;
     let sessionError = null;
-    const MAX_TRIES = 5;
+    const MAX_TRIES = 8;
 
     for (let attempt = 0; attempt < MAX_TRIES; attempt++){
       try{
@@ -359,17 +372,27 @@ async function foccAutoLogin(){
       }
       // Delay sebelum retry
       if (attempt < MAX_TRIES - 1){
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 400));
       }
     }
 
-    /* ✅ PATCH: Kalau tiada authUser selepas retry:
-       - Kalau SDK beri ERROR JELAS (token expired/invalid) → logout betul
-       - Kalau cuma network hiccup (null tanpa error) → fallback, kekal dashboard
+    /* Kalau tiada authUser selepas retry:
+       - Regex KETAT: hanya match refresh/token/jwt/session yang
+         benar-benar bermakna session mati. 'invalid' generik
+         dibuang sebab boleh match error lain (contoh:
+         'invalid_credentials' untuk login, bukan session).
+       - Kalau SDK beri ERROR JELAS → logout betul
+       - Kalau cuma network hiccup (null tanpa error) → fallback
     */
     if (!authUser){
       const errMsg = String((sessionError && sessionError.message) || (lastErr && lastErr.message) || '');
-      const isSessionInvalid = sessionError && /refresh|expired|invalid|revoked|not\s*found/i.test(errMsg);
+
+      const isSessionInvalid =
+        !!sessionError &&
+        /refresh[_ ]token|token[_ ]expired|token[_ ]revoked|jwt[_ ]expired|session[_ ]not[_ ]found|session[_ ]missing/i.test(errMsg);
+
+      console.log('[FOCC] autoLogin: no auth user. errMsg:', errMsg);
+      console.log('[FOCC] autoLogin: isSessionInvalid:', isSessionInvalid);
 
       if (isSessionInvalid){
         console.warn('[FOCC] autoLogin: session invalid — logout:', errMsg);
