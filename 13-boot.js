@@ -594,30 +594,36 @@ async function initFOCC(){
 /* ============================================================
    KICKOFF — foccAutoLogin() dipanggil di 04-auth.js
 ============================================================= */
-
 /* ============================================================
-   FOCC AUTH STATE LISTENER
+   FOCC AUTH STATE LISTENER + KICKOFF
 
-   PATCH v2: guard `event|session`.
-   PATCH v3: retry sampai SDK ready.
-   PATCH v4: grace period 3s.
-   PATCH v5 (2026-10):
-     - grace 3s → 10s
-     - check `focc-supabase-auth-token` — kalau ada, ABAIKAN SIGNED_OUT
-     - polling 30s → 5s
+   PATCH v6 (2026-10):
+   - Buang dependency pada `.onAuthStateChange` — ia kadang tak bind
+     pada SDK partial-load (Tracking Prevention, CDN partial).
+   - Guna `.auth.getSession` sebagai readiness check.
+   - Panggil `foccAutoLogin()` terus bila SDK ready.
+   - Polling 5s: cuba `attachAuthListener` (kalau onAuthStateChange ada),
+     tapi KALAU TAK ADA pun, terus trigger auto-login.
 ============================================================= */
 (function(){
   let lastKey = '';
   let listenerRegistered = false;
+  let autoLoginTriggered = false;
 
   const BOOT_TIME = Date.now();
-  const SIGNED_OUT_GRACE_MS = 10000;   // 10 saat
+  const SIGNED_OUT_GRACE_MS = 10000;
 
-  function isSupabaseAuthReady(){
+  function isAuthClientReady(){
     if (!window.FOCC_SUPABASE) return false;
-    if (typeof FOCC_SUPABASE.auth !== 'object' || !FOCC_SUPABASE.auth) return false;
-    if (typeof FOCC_SUPABASE.auth.onAuthStateChange !== 'function') return false;
+    if (!FOCC_SUPABASE.auth) return false;
+    // Guna getSession sebagai readiness — lebih universal dari onAuthStateChange
+    if (typeof FOCC_SUPABASE.auth.getSession !== 'function') return false;
     return true;
+  }
+
+  function canListenAuth(){
+    return isAuthClientReady() &&
+           typeof FOCC_SUPABASE.auth.onAuthStateChange === 'function';
   }
 
   function tryRecreateClient(){
@@ -636,7 +642,7 @@ async function initFOCC(){
               flowType: 'pkce'
             }
           });
-          if (fresh && fresh.auth && typeof fresh.auth.onAuthStateChange === 'function'){
+          if (fresh && fresh.auth && typeof fresh.auth.getSession === 'function'){
             FOCC_SUPABASE = fresh;
             console.log('[FOCC] Supabase client recreated successfully');
             return true;
@@ -651,16 +657,7 @@ async function initFOCC(){
 
   function attachAuthListener(){
     if (listenerRegistered) return true;
-
-    if (window.FOCC_SUPABASE && !isSupabaseAuthReady()){
-      if (!tryRecreateClient()){
-        return false;
-      }
-    }
-
-    if (!isSupabaseAuthReady()){
-      return false;
-    }
+    if (!canListenAuth()) return false;
 
     try{
       FOCC_SUPABASE.auth.onAuthStateChange((event, session) => {
@@ -674,17 +671,14 @@ async function initFOCC(){
           const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
           const hasLocalAuthToken = !!localStorage.getItem('focc-supabase-auth-token');
 
-          // ⬇️ FIX v5: kalau session + token masih ada, abaikan SIGNED_OUT.
-          //    Punca: Tracking Prevention block SDK → SDK fire SIGNED_OUT
-          //    walaupun token masih sah. Kita biar user kekal logged in.
           if (hasLocal && hasLocalAuthToken){
-            console.warn('[FOCC] SIGNED_OUT diabaikan — session + auth token masih ada dalam localStorage');
+            console.warn('[FOCC] SIGNED_OUT diabaikan — session + auth token masih ada');
             return;
           }
 
           const elapsed = Date.now() - BOOT_TIME;
           if (elapsed < SIGNED_OUT_GRACE_MS && hasLocal){
-            console.warn('[FOCC] SIGNED_OUT dalam grace period — abaikan (SDK init race). Elapsed:', elapsed, 'ms');
+            console.warn('[FOCC] SIGNED_OUT dalam grace period — abaikan. Elapsed:', elapsed, 'ms');
             return;
           }
 
@@ -702,7 +696,7 @@ async function initFOCC(){
           const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
           if (hasLocal){
             console.log('[FOCC] auth ready (' + event + ') — trigger auto-login');
-            foccAutoLogin();
+            triggerAutoLogin();
           }
         }
       });
@@ -716,55 +710,66 @@ async function initFOCC(){
     }
   }
 
-  // Cuba sekarang
-  if (attachAuthListener()) return;
+  /* Idempotent — panggil berapa kali pun, foccAutoLogin hanya jalan sekali */
+  function triggerAutoLogin(){
+    if (autoLoginTriggered) return;
+    autoLoginTriggered = true;
+    if (!foccBooted){
+      console.log('[FOCC] triggerAutoLogin — panggil foccAutoLogin');
+      foccAutoLogin();
+    }
+  }
 
-  // Belum ready — poll setiap 200ms sampai 5 saat (dari 30s)
-  console.warn('[FOCC] auth listener: SDK not ready — polling...');
+  // ═══════════════════════════════════════════════════════════
+  // KICKOFF LOGIC
+  // ═══════════════════════════════════════════════════════════
+
+  // 1) Kalau SDK ready sekarang — cuba attach listener + trigger
+  if (isAuthClientReady()){
+    attachAuthListener();   // ok kalau fail — kita tak kisah
+    console.log('[FOCC] SDK ready at boot — trigger auto-login');
+    setTimeout(triggerAutoLogin, 50);
+    return;
+  }
+
+  // 2) SDK belum ready — poll 200ms × 25 = 5 saat
+  console.warn('[FOCC] SDK not ready at boot — polling...');
   let tries = 0;
-  const MAX_TRIES = 25;  // 25 × 200ms = 5 saat
+  const MAX_TRIES = 25;
   const timer = setInterval(() => {
     tries++;
-    if (attachAuthListener() || tries >= MAX_TRIES){
-      clearInterval(timer);
-      if (tries >= MAX_TRIES && !listenerRegistered){
-        console.warn('[FOCC] auth listener: SDK gagal dimuat selepas 5 saat — fallback ke auto-login');
 
-        try{
-          const raw = localStorage.getItem(FOCC_SESSION_KEY);
-          if (raw){
-            console.log('[FOCC] fallback: FOCC_SESSION_KEY present — panggil foccAutoLogin tanpa SDK');
-            foccAutoLogin();
-          } else {
-            console.log('[FOCC] fallback: tiada session — tunjuk login screen');
-            foccShowPublicScreen();
-          }
-        }catch(e){
-          console.error('[FOCC] fallback throw:', e);
+    // Cuba recreate kalau FOCC_SUPABASE wujud tapi tak complete
+    if (window.FOCC_SUPABASE && !isAuthClientReady()){
+      tryRecreateClient();
+    }
+
+    // Bila auth client ready — attach listener (kalau boleh), trigger auto-login
+    if (isAuthClientReady()){
+      clearInterval(timer);
+      console.log('[FOCC] SDK ready after', tries, 'tries (' + (tries * 200) + 'ms)');
+      attachAuthListener();
+      triggerAutoLogin();
+      return;
+    }
+
+    // Timeout — fallback ke session localStorage terus
+    if (tries >= MAX_TRIES){
+      clearInterval(timer);
+      console.warn('[FOCC] SDK tak ready selepas 5 saat — fallback ke session localStorage');
+
+      try{
+        const raw = localStorage.getItem(FOCC_SESSION_KEY);
+        if (raw){
+          console.log('[FOCC] fallback: FOCC_SESSION_KEY present — panggil foccAutoLogin tanpa SDK');
+          triggerAutoLogin();
+        } else {
+          console.log('[FOCC] fallback: tiada session — tunjuk login screen');
+          foccShowPublicScreen();
         }
+      }catch(e){
+        console.error('[FOCC] fallback throw:', e);
       }
     }
   }, 200);
-
-  // Kickoff auto-login juga
-  if (window.FOCC_SUPABASE){
-    setTimeout(() => {
-      if (!foccBooted){
-        console.log('[FOCC] kickoff auto-login (via boot)');
-        foccAutoLogin();
-      }
-    }, 50);
-  } else {
-    const kickTimer = setInterval(() => {
-      if (window.FOCC_SUPABASE){
-        clearInterval(kickTimer);
-        setTimeout(() => {
-          if (!foccBooted){
-            console.log('[FOCC] kickoff auto-login (after SDK ready)');
-            foccAutoLogin();
-          }
-        }, 50);
-      }
-    }, 100);
-  }
 })();
