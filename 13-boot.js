@@ -599,41 +599,92 @@ async function initFOCC(){
    Punca: TOKEN_REFRESHED → SIGNED_OUT → TOKEN_REFRESHED akan
    skip event ke-3 kalau guard guna `event === lastEvent`.
    ============================================================ */
+/* ============================================================
+   FOCC AUTH STATE LISTENER
+   Reaktif bila Supabase SDK ready / token berubah.
+
+   PATCH v3: retry sampai SDK ready — kerana CDN script
+   (supabase-js) kadang load LEPAS 13-boot.js jalan.
+   ============================================================ */
 (function(){
-  if (!window.FOCC_SUPABASE || typeof FOCC_SUPABASE.auth.onAuthStateChange !== 'function'){
-    console.warn('[FOCC] auth listener: SDK not ready');
-    return;
+  let lastKey = '';
+  let listenerRegistered = false;
+
+  function attachAuthListener(){
+    if (listenerRegistered) return true;
+    if (!window.FOCC_SUPABASE || typeof FOCC_SUPABASE.auth.onAuthStateChange !== 'function'){
+      return false;
+    }
+
+    FOCC_SUPABASE.auth.onAuthStateChange((event, session) => {
+      const key = event + '|' + (session ? 'yes' : 'no');
+      console.log('[FOCC] auth event:', event, '| session:', session ? 'YES' : 'NO', '| key:', key, '| booted:', foccBooted);
+
+      if (key === lastKey){ return; }
+      lastKey = key;
+
+      if (event === 'SIGNED_OUT'){
+        try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
+        if (foccBooted){
+          foccBooted = false;
+          try{ clearTenantRuntimeState(); }catch(e){}
+          try{ bugBadgeStop(); }catch(e){}
+        }
+        foccShowPublicScreen();
+        return;
+      }
+
+      if (session && !foccBooted){
+        const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
+        if (hasLocal){
+          console.log('[FOCC] auth ready (' + event + ') — trigger auto-login');
+          foccAutoLogin();
+        }
+      }
+    });
+
+    listenerRegistered = true;
+    console.log('[FOCC] auth listener attached');
+    return true;
   }
 
-  let lastKey = '';
+  // Cuba sekarang
+  if (attachAuthListener()) return;
 
-  FOCC_SUPABASE.auth.onAuthStateChange((event, session) => {
-    const key = event + '|' + (session ? 'yes' : 'no');
-    console.log('[FOCC] auth event:', event, '| session:', session ? 'YES' : 'NO', '| key:', key, '| booted:', foccBooted);
-
-    // Guard: skip hanya kalau event + session-state SAMA
-    if (key === lastKey){ return; }
-    lastKey = key;
-
-    if (event === 'SIGNED_OUT'){
-      try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
-      if (foccBooted){
-        foccBooted = false;
-        try{ clearTenantRuntimeState(); }catch(e){}
-        try{ bugBadgeStop(); }catch(e){}
+  // Belum ready — poll setiap 100ms sampai 10 saat
+  console.warn('[FOCC] auth listener: SDK not ready — polling...');
+  let tries = 0;
+  const MAX_TRIES = 100;  // 100 × 100ms = 10 saat
+  const timer = setInterval(() => {
+    tries++;
+    if (attachAuthListener() || tries >= MAX_TRIES){
+      clearInterval(timer);
+      if (tries >= MAX_TRIES && !listenerRegistered){
+        console.error('[FOCC] auth listener: SDK gagal dimuat selepas 10 saat');
       }
-      foccShowPublicScreen();
-      return;
     }
+  }, 100);
 
-    // SIGNED_IN / INITIAL_SESSION / TOKEN_REFRESHED dengan session valid
-    // → pastikan app booted
-    if (session && !foccBooted){
-      const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
-      if (hasLocal){
-        console.log('[FOCC] auth ready (' + event + ') — trigger auto-login');
+  // Kickoff auto-login juga — kalau SDK ready awal, jangan tunggu listener
+  if (window.FOCC_SUPABASE){
+    setTimeout(() => {
+      if (!foccBooted){
+        console.log('[FOCC] kickoff auto-login (via boot)');
         foccAutoLogin();
       }
-    }
-  });
+    }, 50);
+  } else {
+    // Tunggu SDK, kemudian trigger auto-login
+    const kickTimer = setInterval(() => {
+      if (window.FOCC_SUPABASE){
+        clearInterval(kickTimer);
+        setTimeout(() => {
+          if (!foccBooted){
+            console.log('[FOCC] kickoff auto-login (after SDK ready)');
+            foccAutoLogin();
+          }
+        }, 50);
+      }
+    }, 100);
+  }
 })();
