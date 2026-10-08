@@ -3128,3 +3128,286 @@ html.theme-dark .pm-tl-pick-row b{color:#e6edf3;}
 .pm-tl-pick-row.is-locked input{cursor:not-allowed;}
 .pm-tl-pick-row.is-locked small{color:#a33a30;font-weight:600;}
 html.theme-dark .pm-tl-pick-row.is-locked{background:#0d1218;}
+
+/* ============================================================
+   DEPOT LAYOUT BUILDER — Phase 3
+   ============================================================ */
+
+.depot-layout-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ---- Block Card Grid ---- */
+.depot-block-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.depot-block-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.depot-block-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  background: var(--block-color, #1aa39a);
+}
+
+.depot-block-card:hover {
+  border-color: rgba(26,163,154,.4);
+  box-shadow: 0 6px 18px rgba(12,32,50,.08);
+}
+
+.depot-block-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.depot-block-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: var(--block-color, #1aa39a);
+  color: #fff;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 17px;
+  letter-spacing: .02em;
+  box-shadow: 0 4px 10px rgba(12,32,50,.12);
+}
+
+.depot-block-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s ease;
+}
+
+.depot-block-icon-btn:hover:not(:disabled) {
+  border-color: var(--teal);
+  color: var(--teal-dark);
+  background: rgba(26,163,154,.08);
+}
+
+.depot-block-icon-btn:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+
+.depot-block-preview {
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+html.theme-dark .depot-block-preview {
+  background: #0d1a26;
+}
+
+.depot-preview-grid {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+}
+
+.depot-preview-cell {
+  aspect-ratio: 1;
+  border: 1px solid rgba(26,163,154,.35);
+  background: rgba(26,163,154,.08);
+  border-radius: 3px;
+  min-height: 10px;
+}
+
+.depot-preview-truncated {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+  font-family: var(--font-mono);
+  letter-spacing: .04em;
+}
+
+.depot-block-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.depot-block-stats b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.depot-block-stats .sep {
+  opacity: .4;
+}
+
+.depot-block-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.depot-block-card-actions .btn {
+  flex: 1;
+  justify-content: center;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.depot-block-card-actions .btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- Block Editor Modal ---- */
+.depot-editor-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8,21,33,.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.depot-editor-modal {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  width: min(620px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px 26px;
+  box-shadow: 0 24px 70px -18px rgba(0,0,0,.5);
+}
+
+.depot-editor-modal h4 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 14px;
+  margin: 0 0 18px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--ink);
+}
+
+.depot-editor-modal h4::before {
+  content: "";
+  width: 5px;
+  height: 19px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--teal), var(--teal-dark));
+  flex: none;
+}
+
+/* ---- Color Picker ---- */
+.depot-color-picker {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.depot-color-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+
+.depot-color-swatch:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 10px rgba(12,32,50,.15);
+}
+
+.depot-color-swatch.is-active {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(26,163,154,.25);
+  transform: scale(1.08);
+}
+
+/* ---- Live Preview in Modal ---- */
+.depot-live-preview {
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 90px;
+}
+
+html.theme-dark .depot-live-preview {
+  background: #0d1a26;
+}
+
+/* ---- Dark Mode Overrides ---- */
+html.theme-dark .depot-block-card {
+  background: #11161d;
+  border-color: #232c36;
+}
+
+html.theme-dark .depot-block-card:hover {
+  border-color: rgba(26,163,154,.5);
+}
+
+html.theme-dark .depot-editor-modal {
+  background: #11161d;
+  border-color: #2a3440;
+}
+
+html.theme-dark .depot-editor-modal h4 {
+  border-bottom-color: #232c36;
+  color: #e6edf3;
+}
+
+/* ---- Mobile Responsive ---- */
+@media (max-width: 700px) {
+  .depot-block-grid {
+    grid-template-columns: 1fr;
+  }
+  .depot-editor-modal {
+    padding: 18px 16px 16px;
+    border-radius: 16px;
+  }
+}

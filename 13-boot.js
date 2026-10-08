@@ -212,7 +212,7 @@ const NAV_STRUCTURE = [
       {key:'apadKnowledgeCenter', label:'APAD'},
     ]},
   ]},
-  
+
     { group:'Depot Operations', dot:'#1aa39a', items:[
     {key:'depotOverview', label:'Depot Overview'},
     {key:'depotLayout',   label:'Depot Layout'},
