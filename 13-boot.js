@@ -590,26 +590,24 @@ async function initFOCC(){
 /* ============================================================
    FOCC AUTH STATE LISTENER
    Reaktif bila Supabase SDK ready / token berubah.
-   Fix: bila page refresh, SDK kadang lambat load → app terus
-   trigger auto-login bila auth state ready.
+   FIX: JANGAN skip event pertama — INITIAL_SESSION bagitau SDK ready.
    ============================================================ */
 (function(){
   if (!window.FOCC_SUPABASE || typeof FOCC_SUPABASE.auth.onAuthStateChange !== 'function'){
+    console.warn('[FOCC] auth listener: SDK not ready');
     return;
   }
-  let initialFired = false;
+
+  let lastEventHandled = '';
 
   FOCC_SUPABASE.auth.onAuthStateChange((event, session) => {
-    // Skip event pertama (INITIAL_SESSION) — foccAutoLogin() dah handle
-    if (!initialFired){
-      initialFired = true;
-      return;
-    }
+    console.log('[FOCC] auth event:', event, '| session:', session ? 'YES' : 'NO', '| booted:', foccBooted);
 
-    console.log('[FOCC] auth event:', event);
+    // Kalau event sama berulang, skip
+    if (event === lastEventHandled){ return; }
+    lastEventHandled = event;
 
     if (event === 'SIGNED_OUT'){
-      // Session habis atau logout — bersihkan state
       try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
       if (foccBooted){
         foccBooted = false;
@@ -620,10 +618,12 @@ async function initFOCC(){
       return;
     }
 
-    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED'){
-      // Kalau app belum booted tapi ada token → cuba auto-login
-      if (!foccBooted && localStorage.getItem(FOCC_SESSION_KEY)){
-        console.log('[FOCC] auth ready — retry auto-login');
+    // SIGNED_IN / INITIAL_SESSION / TOKEN_REFRESHED dengan session valid
+    // → pastikan app booted
+    if (session && !foccBooted){
+      const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
+      if (hasLocal){
+        console.log('[FOCC] auth ready (' + event + ') — trigger auto-login');
         foccAutoLogin();
       }
     }

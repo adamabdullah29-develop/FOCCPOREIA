@@ -336,7 +336,7 @@ async function foccAutoLogin(){
     }
     // Delay sebelum retry
     if (attempt < MAX_TRIES - 1){
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 500));
     }
   }
 
