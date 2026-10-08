@@ -1,6 +1,10 @@
 /* =========================================================================
    FOCC — 13-boot.js  (GABUNGAN A + B)
    ROUTES, NAV_STRUCTURE, buildNav, goTo, initFOCC, theme, event listeners.
+
+   PATCH v2 (2026-02):
+   - auth listener: guard guna `event|session` (bukan event sahaja)
+     supaya TOKEN_REFRESHED → SIGNED_OUT → TOKEN_REFRESHED semua diproses
    =========================================================================
    Bahagian A — ROUTES + NAV_STRUCTURE
    Bahagian B — buildNav, goTo, initFOCC, theme, event listeners
@@ -590,7 +594,10 @@ async function initFOCC(){
 /* ============================================================
    FOCC AUTH STATE LISTENER
    Reaktif bila Supabase SDK ready / token berubah.
-   FIX: JANGAN skip event pertama — INITIAL_SESSION bagitau SDK ready.
+
+   PATCH v2: guard guna `event|session` — bukan event sahaja.
+   Punca: TOKEN_REFRESHED → SIGNED_OUT → TOKEN_REFRESHED akan
+   skip event ke-3 kalau guard guna `event === lastEvent`.
    ============================================================ */
 (function(){
   if (!window.FOCC_SUPABASE || typeof FOCC_SUPABASE.auth.onAuthStateChange !== 'function'){
@@ -598,14 +605,15 @@ async function initFOCC(){
     return;
   }
 
-  let lastEventHandled = '';
+  let lastKey = '';
 
   FOCC_SUPABASE.auth.onAuthStateChange((event, session) => {
-    console.log('[FOCC] auth event:', event, '| session:', session ? 'YES' : 'NO', '| booted:', foccBooted);
+    const key = event + '|' + (session ? 'yes' : 'no');
+    console.log('[FOCC] auth event:', event, '| session:', session ? 'YES' : 'NO', '| key:', key, '| booted:', foccBooted);
 
-    // Kalau event sama berulang, skip
-    if (event === lastEventHandled){ return; }
-    lastEventHandled = event;
+    // Guard: skip hanya kalau event + session-state SAMA
+    if (key === lastKey){ return; }
+    lastKey = key;
 
     if (event === 'SIGNED_OUT'){
       try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}

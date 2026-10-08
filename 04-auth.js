@@ -2,7 +2,17 @@
    FOCC — 04-auth.js
    Login Supabase, session 24-jam, auto-login, logout,
    landing page controls, legal pages toggle.
+
+   PATCH v2 (2026-02):
+   - Guard foccAutoLoginRunning → elak double-init
+   - Bezakan session-invalid (logout) vs network hiccup (fallback)
+   - Buang foccShowLogin() berulang dalam logoutFOCC()
    ========================================================================= */
+
+/* ============================================================
+   AUTO-LOGIN GUARD — elak dua panggilan serentak
+============================================================= */
+let foccAutoLoginRunning = false;
 
 /* ============================================================
    LOGIN SCREEN HELPERS
@@ -235,7 +245,6 @@ async function loginFOCC(){
 ============================================================= */
 async function logoutFOCC(){
   foccBooted = false;
-  try{ foccShowLogin('', false); }catch(e){ console.error('logout: show login failed', e); }
   try{ history.replaceState(null, '', '#/login'); }catch(e){}
   try{
     const emailEl = document.getElementById('foccEmailInput');
@@ -250,6 +259,7 @@ async function logoutFOCC(){
   try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
   try{ if (FOCC_SUPABASE) await FOCC_SUPABASE.auth.signOut(); }catch(e){}
 
+  // Satu panggilan sahaja — tunjuk login screen di akhir
   try{ foccShowLogin('', false); }catch(e){}
 }
 
@@ -279,167 +289,190 @@ function foccShowPublicScreen(){
 
 /* ============================================================
    AUTO LOGIN — session 24 jam
-   ✅ FIX: Retry getSession beberapa kali + fallback
-   ============================================================ */
+   PATCH: 
+   - Guard foccAutoLoginRunning (elak double-init)
+   - Retry getSession 5x
+   - Bezakan session-invalid (logout) vs network hiccup (fallback)
+============================================================= */
 async function foccAutoLogin(){
-  console.log('[FOCC] autoLogin: start');
-
-  const raw = localStorage.getItem(FOCC_SESSION_KEY);
-  if (!raw){
-    console.log('[FOCC] autoLogin: no session → login screen');
-    foccShowPublicScreen();
+  // ── Guard: elak dua panggilan serentak ──
+  if (foccAutoLoginRunning){
+    console.log('[FOCC] autoLogin: already running — skip');
     return;
   }
-
-  let session;
-  try{ session = JSON.parse(raw); } catch(e){ session = null; }
-  if (!session || !session.email || !session.loginTimestamp){
-    console.log('[FOCC] autoLogin: invalid session → clear + login');
-    localStorage.removeItem(FOCC_SESSION_KEY);
-    foccShowPublicScreen();
-    return;
-  }
-
-  const ageMs = Date.now() - session.loginTimestamp;
-  const ageHours = (ageMs / 3600000).toFixed(1);
-  console.log('[FOCC] autoLogin: session age', ageHours, 'hours');
-
-  if (!(ageMs >= 0) || ageMs > FOCC_SESSION_MAX_AGE_MS){
-    console.log('[FOCC] autoLogin: session expired → login');
-    localStorage.removeItem(FOCC_SESSION_KEY);
-    try{ if (FOCC_SUPABASE) await FOCC_SUPABASE.auth.signOut(); }catch(e){}
-    foccShowPublicScreen();
-    return;
-  }
-
-  /* ✅ FIX: Retry getSession sampai 5 kali dengan delay 300ms
-     Supabase SDK kadang belum ready bila page refresh */
-  let authUser = null;
-  let lastErr = null;
-  const MAX_TRIES = 5;
-
-  for (let attempt = 0; attempt < MAX_TRIES; attempt++){
-    try{
-      if (FOCC_SUPABASE){
-        const sessRes = await FOCC_SUPABASE.auth.getSession();
-        authUser = (sessRes && sessRes.data && sessRes.data.session)
-          ? sessRes.data.session.user
-          : null;
-        if (authUser){
-          console.log('[FOCC] autoLogin: auth OK (attempt', attempt + 1, ')');
-          break;
-        }
-      }
-    }catch(e){
-      lastErr = e;
-      console.warn('[FOCC] getSession attempt', attempt + 1, 'failed:', e);
-    }
-    // Delay sebelum retry
-    if (attempt < MAX_TRIES - 1){
-      await new Promise(r => setTimeout(r, 500));
-    }
-  }
-
-  /* ✅ FIX: Kalau authUser null SELEPAS retry, cuba fallback:
-     - Kalau ada session di localStorage, kekal dashboard
-     - Kalau takde langsung, baru redirect login
-     
-     Prinsip: JANGAN redirect login sebab SDK lambat / network hiccup.
-     Redirect login hanya kalau betul-betul takde token. */
-  if (!authUser){
-    console.warn('[FOCC] autoLogin: no auth user after', MAX_TRIES, 'tries — keeping session (fallback)');
-    console.warn('[FOCC] lastErr:', lastErr);
-    // Fallback: teruskan dengan session dari localStorage
-    // Jangan redirect ke login — biar app loading.
-    // Kalau betul-betul token expired, API call akan fail → handle dalam UI.
-    try{
-      await syncProviderFromSession(session);
-    }catch(e){ console.warn('[FOCC] syncProvider failed (non-fatal):', e); }
-    foccShowApp(session);
-    return;
-  }
-
-  const emailInput = document.getElementById('foccEmailInput');
-  if (emailInput) emailInput.value = session.email;
+  foccAutoLoginRunning = true;
 
   try {
-    await syncProviderFromSession(session);
-  } catch(e){
-    console.warn('syncProviderFromSession failed (non-fatal):', e);
-  }
-  foccShowApp(session);
+    console.log('[FOCC] autoLogin: start');
 
-  /* Refresh profile dalam background — JANGAN redirect login kalau gagal. */
-  try{
-    const profRes = await FOCC_SUPABASE
-      .from('profiles').select('*').eq('id', authUser.id).single();
-
-    const profile = profRes.data;
-
-    if (!profile){
-      console.warn('Profile refresh returned null — keeping cached session');
+    const raw = localStorage.getItem(FOCC_SESSION_KEY);
+    if (!raw){
+      console.log('[FOCC] autoLogin: no session → login screen');
+      foccShowPublicScreen();
       return;
     }
 
-    let allowed = String(profile.status || '') === 'Active';
-
-    let creds = { googleSheetId: '', appsScriptUrl: '', status: 'Active' };
-    if (allowed && profile.company_id){
-      try {
-        creds = await fetchCompanySheetCreds(profile.company_id);
-        if (creds.status !== 'Active') allowed = false;
-      } catch(e){
-        console.warn('fetchCompanySheetCreds failed — keeping cached session:', e);
-      }
-    }
-
-    if (allowed && profile.expiry_date){
-      const today = new Date(); today.setHours(0,0,0,0);
-      const expiry = new Date(profile.expiry_date); expiry.setHours(0,0,0,0);
-      if (!isNaN(expiry.getTime()) && today > expiry) allowed = false;
-    }
-
-    if (allowed){
-      const routes =
-        String(profile.allowed_routes || '').trim() === 'ALL'
-          ? ['ALL']
-          : String(profile.allowed_routes || '')
-              .split(',').map(v => v.trim()).filter(Boolean);
-
-      const refreshed = {
-        email:          profile.email || session.email,
-        company:        profile.company || '',
-        companyId:      profile.company_id || '',
-        googleSheetId:  creds.googleSheetId || '',
-        appsScriptUrl:  creds.appsScriptUrl || '',
-        role:           profile.role || '',
-        routes:         routes,
-        expiryDate:     profile.expiry_date || '',
-        version:        profile.version || '',
-        loginTimestamp: session.loginTimestamp
-      };
-
-      localStorage.setItem(FOCC_SESSION_KEY, JSON.stringify(refreshed));
-      await syncProviderFromSession(refreshed);
-
-      const badge = document.getElementById('foccUserBadge');
-      if (badge){
-        badge.innerHTML = `
-          Company: ${refreshed.company || '-'}<br>
-          Company ID: ${refreshed.companyId || '-'}<br>
-          Email: ${refreshed.email || '-'}<br>
-          Expiry: ${refreshed.expiryDate || '-'}
-        `;
-      }
-    } else {
-      console.warn('Session invalidated by profile check — logging out');
+    let session;
+    try{ session = JSON.parse(raw); } catch(e){ session = null; }
+    if (!session || !session.email || !session.loginTimestamp){
+      console.log('[FOCC] autoLogin: invalid session → clear + login');
       localStorage.removeItem(FOCC_SESSION_KEY);
-      foccBooted = false;
-      try{ await FOCC_SUPABASE.auth.signOut(); }catch(e){}
       foccShowPublicScreen();
+      return;
     }
-  } catch(err){
-    console.warn('Profile refresh network error — keeping cached session:', err);
+
+    const ageMs = Date.now() - session.loginTimestamp;
+    const ageHours = (ageMs / 3600000).toFixed(1);
+    console.log('[FOCC] autoLogin: session age', ageHours, 'hours');
+
+    if (!(ageMs >= 0) || ageMs > FOCC_SESSION_MAX_AGE_MS){
+      console.log('[FOCC] autoLogin: session expired → login');
+      localStorage.removeItem(FOCC_SESSION_KEY);
+      try{ if (FOCC_SUPABASE) await FOCC_SUPABASE.auth.signOut(); }catch(e){}
+      foccShowPublicScreen();
+      return;
+    }
+
+    /* ✅ FIX: Retry getSession sampai 5 kali dengan delay 500ms
+       Supabase SDK kadang belum ready bila page refresh */
+    let authUser = null;
+    let lastErr = null;
+    let sessionError = null;
+    const MAX_TRIES = 5;
+
+    for (let attempt = 0; attempt < MAX_TRIES; attempt++){
+      try{
+        if (FOCC_SUPABASE){
+          const sessRes = await FOCC_SUPABASE.auth.getSession();
+          if (sessRes && sessRes.error) sessionError = sessRes.error;
+          authUser = (sessRes && sessRes.data && sessRes.data.session)
+            ? sessRes.data.session.user
+            : null;
+          if (authUser){
+            console.log('[FOCC] autoLogin: auth OK (attempt', attempt + 1, ')');
+            break;
+          }
+        }
+      }catch(e){
+        lastErr = e;
+        console.warn('[FOCC] getSession attempt', attempt + 1, 'failed:', e);
+      }
+      // Delay sebelum retry
+      if (attempt < MAX_TRIES - 1){
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    /* ✅ PATCH: Kalau tiada authUser selepas retry:
+       - Kalau SDK beri ERROR JELAS (token expired/invalid) → logout betul
+       - Kalau cuma network hiccup (null tanpa error) → fallback, kekal dashboard
+    */
+    if (!authUser){
+      const errMsg = String((sessionError && sessionError.message) || (lastErr && lastErr.message) || '');
+      const isSessionInvalid = sessionError && /refresh|expired|invalid|revoked|not\s*found/i.test(errMsg);
+
+      if (isSessionInvalid){
+        console.warn('[FOCC] autoLogin: session invalid — logout:', errMsg);
+        localStorage.removeItem(FOCC_SESSION_KEY);
+        try{ await FOCC_SUPABASE.auth.signOut(); }catch(e){}
+        foccShowPublicScreen();
+        return;
+      }
+
+      console.warn('[FOCC] autoLogin: no auth user after', MAX_TRIES, 'tries — fallback (network hiccup)');
+      console.warn('[FOCC] lastErr:', lastErr, '| sessionError:', sessionError);
+      // Fallback: teruskan dengan session dari localStorage
+      try{
+        await syncProviderFromSession(session);
+      }catch(e){ console.warn('[FOCC] syncProvider failed (non-fatal):', e); }
+      foccShowApp(session);
+      return;
+    }
+
+    const emailInput = document.getElementById('foccEmailInput');
+    if (emailInput) emailInput.value = session.email;
+
+    try {
+      await syncProviderFromSession(session);
+    } catch(e){
+      console.warn('syncProviderFromSession failed (non-fatal):', e);
+    }
+    foccShowApp(session);
+
+    /* Refresh profile dalam background — JANGAN redirect login kalau gagal. */
+    try{
+      const profRes = await FOCC_SUPABASE
+        .from('profiles').select('*').eq('id', authUser.id).single();
+
+      const profile = profRes.data;
+
+      if (!profile){
+        console.warn('Profile refresh returned null — keeping cached session');
+        return;
+      }
+
+      let allowed = String(profile.status || '') === 'Active';
+
+      let creds = { googleSheetId: '', appsScriptUrl: '', status: 'Active' };
+      if (allowed && profile.company_id){
+        try {
+          creds = await fetchCompanySheetCreds(profile.company_id);
+          if (creds.status !== 'Active') allowed = false;
+        } catch(e){
+          console.warn('fetchCompanySheetCreds failed — keeping cached session:', e);
+        }
+      }
+
+      if (allowed && profile.expiry_date){
+        const today = new Date(); today.setHours(0,0,0,0);
+        const expiry = new Date(profile.expiry_date); expiry.setHours(0,0,0,0);
+        if (!isNaN(expiry.getTime()) && today > expiry) allowed = false;
+      }
+
+      if (allowed){
+        const routes =
+          String(profile.allowed_routes || '').trim() === 'ALL'
+            ? ['ALL']
+            : String(profile.allowed_routes || '')
+                .split(',').map(v => v.trim()).filter(Boolean);
+
+        const refreshed = {
+          email:          profile.email || session.email,
+          company:        profile.company || '',
+          companyId:      profile.company_id || '',
+          googleSheetId:  creds.googleSheetId || '',
+          appsScriptUrl:  creds.appsScriptUrl || '',
+          role:           profile.role || '',
+          routes:         routes,
+          expiryDate:     profile.expiry_date || '',
+          version:        profile.version || '',
+          loginTimestamp: session.loginTimestamp
+        };
+
+        localStorage.setItem(FOCC_SESSION_KEY, JSON.stringify(refreshed));
+        await syncProviderFromSession(refreshed);
+
+        const badge = document.getElementById('foccUserBadge');
+        if (badge){
+          badge.innerHTML = `
+            Company: ${refreshed.company || '-'}<br>
+            Company ID: ${refreshed.companyId || '-'}<br>
+            Email: ${refreshed.email || '-'}<br>
+            Expiry: ${refreshed.expiryDate || '-'}
+          `;
+        }
+      } else {
+        console.warn('Session invalidated by profile check — logging out');
+        localStorage.removeItem(FOCC_SESSION_KEY);
+        foccBooted = false;
+        try{ await FOCC_SUPABASE.auth.signOut(); }catch(e){}
+        foccShowPublicScreen();
+      }
+    } catch(err){
+      console.warn('Profile refresh network error — keeping cached session:', err);
+    }
+  } finally {
+    foccAutoLoginRunning = false;
   }
 }
 
