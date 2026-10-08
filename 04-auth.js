@@ -9,11 +9,14 @@
    - Buang foccShowLogin() berulang dalam logoutFOCC()
 
    PATCH v3 (2026-10):
-   - Regex isSessionInvalid lebih ketat — buang 'invalid' generik
-     (boleh false-positive). Hanya match refresh/token/jwt/session
-     yang benar-benar bermakna session mati.
-   - MAX_TRIES naik 5 → 8, delay 500ms → 400ms (total 3.2s).
-   - Diagnostic log tambahan untuk debug race condition refresh.
+   - Regex isSessionInvalid lebih ketat.
+   - MAX_TRIES naik 5 → 8, delay 500ms → 400ms.
+
+   PATCH v4 (2026-10):
+   - SKIP syncProviderFromSession() bila SDK tak ready.
+     Punca: syncProviderFromSession guna FOCC_SUPABASE → hang bila
+     SDK tak ready (Tracking Prevention block). User tunggu 30s.
+     Session data dalam localStorage SUDAH CUKUP untuk showApp().
    ========================================================================= */
 
 /* ============================================================
@@ -264,6 +267,7 @@ async function logoutFOCC(){
   try{ clearTenantRuntimeState(); }catch(e){ console.error('logout: clearTenantRuntimeState failed', e); }
 
   try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
+  try{ localStorage.removeItem('focc-supabase-auth-token'); }catch(e){}
   try{ if (FOCC_SUPABASE) await FOCC_SUPABASE.auth.signOut(); }catch(e){}
 
   // Satu panggilan sahaja — tunjuk login screen di akhir
@@ -297,12 +301,8 @@ function foccShowPublicScreen(){
 /* ============================================================
    AUTO LOGIN — session 24 jam
 
-   PATCH v3:
-   - Guard foccAutoLoginRunning (elak double-init)
-   - Retry getSession 8x @ 400ms (total 3.2s)
-   - Regex isSessionInvalid lebih KETAT — buang 'invalid' generik
-     yang boleh false-positive dan logout user secara tak sengaja
-   - Diagnostic log tambahan
+   PATCH v3: guard + retry 8x @ 400ms + regex ketat + log.
+   PATCH v4: skip syncProviderFromSession bila SDK tak ready.
 ============================================================= */
 async function foccAutoLogin(){
   // ── Guard: elak dua panggilan serentak ──
@@ -347,10 +347,10 @@ async function foccAutoLogin(){
     }
 
     /* ── PATCH v4: Kesan SDK tak ready ──
-       Kalau FOCC_SUPABASE tak wujud atau .auth tak ready, jangan cuba
-       getSession (akan fail). Terus fallback ke session localStorage.
-       Ini berlaku bila Edge/Safari Tracking Prevention block storage,
-       atau CDN jsdelivr down / partial load. */
+       Kalau FOCC_SUPABASE tak wujud atau .auth tak ready, JANGAN cuba
+       getSession atau syncProviderFromSession (dua-dua akan hang).
+       Terus showApp() dengan session data dari localStorage — itu sahaja
+       yang user perlukan untuk mula guna sistem. */
     const sdkReady = !!(
       window.FOCC_SUPABASE &&
       FOCC_SUPABASE.auth &&
@@ -358,10 +358,7 @@ async function foccAutoLogin(){
     );
 
     if (!sdkReady){
-      console.warn('[FOCC] autoLogin: SDK not ready — fallback ke session localStorage tanpa verify');
-      try{
-        await syncProviderFromSession(session);
-      }catch(e){ console.warn('[FOCC] syncProvider failed (non-fatal):', e); }
+      console.warn('[FOCC] autoLogin: SDK not ready — showApp terus (skip syncProvider)');
       foccShowApp(session);
       return;
     }
@@ -397,12 +394,9 @@ async function foccAutoLogin(){
     }
 
     /* Kalau tiada authUser selepas retry:
-       - Regex KETAT: hanya match refresh/token/jwt/session yang
-         benar-benar bermakna session mati. 'invalid' generik
-         dibuang sebab boleh match error lain (contoh:
-         'invalid_credentials' untuk login, bukan session).
+       - Regex KETAT: hanya match refresh/token/jwt/session mati.
        - Kalau SDK beri ERROR JELAS → logout betul
-       - Kalau cuma network hiccup (null tanpa error) → fallback
+       - Kalau cuma network hiccup → fallback (showApp)
     */
     if (!authUser){
       const errMsg = String((sessionError && sessionError.message) || (lastErr && lastErr.message) || '');
@@ -422,12 +416,8 @@ async function foccAutoLogin(){
         return;
       }
 
-      console.warn('[FOCC] autoLogin: no auth user after', MAX_TRIES, 'tries — fallback (network hiccup)');
+      console.warn('[FOCC] autoLogin: no auth user after', MAX_TRIES, 'tries — fallback (showApp terus)');
       console.warn('[FOCC] lastErr:', lastErr, '| sessionError:', sessionError);
-      // Fallback: teruskan dengan session dari localStorage
-      try{
-        await syncProviderFromSession(session);
-      }catch(e){ console.warn('[FOCC] syncProvider failed (non-fatal):', e); }
       foccShowApp(session);
       return;
     }

@@ -2,6 +2,13 @@
    FOCC — 02-storage.js
    Data layer: Supabase client, provider routing, loadTableData/saveTableData,
    getData/persist, realtime sync, dan Supabase provider.
+
+   PATCH v2 (2026-10):
+   - Force localStorage adapter untuk Supabase Auth
+     Punca: Edge/Safari Tracking Prevention block IndexedDB untuk CDN
+     domain (cdn.jsdelivr.net / unpkg.com). Ini buat SDK tak dapat
+     simpan session → auto-login fail setiap refresh.
+     localStorage same-origin dengan FOCC, jadi biasanya tak kena block.
    ========================================================================= */
 
 /* ============================================================
@@ -14,7 +21,17 @@ const FOCC_SUPABASE_KEY = 'sb_publishable_h-FiqjHNYbz2sz4u_ESCjA_5jfF07mQ';
 
 let FOCC_SUPABASE = null;
 try {
-  FOCC_SUPABASE = window.supabase.createClient(FOCC_SUPABASE_URL, FOCC_SUPABASE_KEY);
+  FOCC_SUPABASE = window.supabase.createClient(FOCC_SUPABASE_URL, FOCC_SUPABASE_KEY, {
+    auth: {
+      storage: window.localStorage,                 // paksa localStorage (bukan IndexedDB)
+      storageKey: 'focc-supabase-auth-token',
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false,
+      flowType: 'pkce'
+    }
+  });
+  console.log('[FOCC] Supabase client created with localStorage adapter');
 } catch (e) {
   console.error('Supabase client gagal dimuat:', e);
 }

@@ -3,20 +3,20 @@
    ROUTES, NAV_STRUCTURE, buildNav, goTo, initFOCC, theme, event listeners.
 
    PATCH v2 (2026-02):
-   - auth listener: guard guna `event|session` (bukan event sahaja)
-     supaya TOKEN_REFRESHED → SIGNED_OUT → TOKEN_REFRESHED semua diproses
+   - auth listener: guard guna `event|session`
 
    PATCH v3 (2026-02):
-   - retry sampai SDK ready — CDN script (supabase-js) kadang load
-     LEPAS 13-boot.js jalan.
+   - retry sampai SDK ready
 
    PATCH v4 (2026-10):
-   - SIGNED_OUT grace period 3s — SDK init race buang session semasa
-     page refresh. Listener abaikan SIGNED_OUT dalam grace period
-     kalau FOCC_SESSION_KEY masih ada dalam localStorage.
-   =========================================================================
-   Bahagian A — ROUTES + NAV_STRUCTURE
-   Bahagian B — buildNav, goTo, initFOCC, theme, event listeners
+   - SIGNED_OUT grace period 3s
+
+   PATCH v5 (2026-10):
+   - grace period naik 3s → 10s
+   - check `focc-supabase-auth-token` — kalau ada, ABAIKAN SIGNED_OUT
+     (Tracking Prevention block SDK → SDK fire SIGNED_OUT walaupun
+      token masih sah)
+   - polling turun 30s → 5s (fallback lebih laju)
    ========================================================================= */
 
 /* =========================================================================
@@ -58,7 +58,6 @@ const ROUTES = {
     crumb:'Compliance',
     render: renderFegServiceHistoryPage,
   },
-    /* ---- Depot Module (Phase 2) ---- */
   depotOverview: {
     title: 'Depot Overview',
     crumb: 'Depot',
@@ -104,7 +103,6 @@ const ROUTES = {
   companyManager:      { title:'Company Manager', crumb:'Settings', render: renderCompanyManagerPage },
   systemHealth:        { title:'System Health', crumb:'Administration', render: renderSystemHealthPage },
 
-  /* ---- New module skeletons (registered, existing entries above untouched) ---- */
   tipperOpsDashboard:            { title:'Tipper Dashboard',    crumb:'Tipper Operations',        render: () => renderModuleSkeleton('tipperOpsDashboard') },
   containerOpsDashboard:         { title:'Container Dashboard', crumb:'Container Operations',     render: () => renderModuleSkeleton('containerOpsDashboard') },
   tankerOpsDashboard:            { title:'Tanker Dashboard',    crumb:'Tanker Operations',        render: () => renderModuleSkeleton('tankerOpsDashboard') },
@@ -224,7 +222,7 @@ const NAV_STRUCTURE = [
     ]},
   ]},
 
-    { group:'Depot Operations', dot:'#1aa39a', items:[
+  { group:'Depot Operations', dot:'#1aa39a', items:[
     {key:'depotOverview', label:'Depot Overview'},
     {key:'depotLayout',   label:'Depot Layout'},
   ]},
@@ -595,27 +593,25 @@ async function initFOCC(){
 
 /* ============================================================
    KICKOFF — foccAutoLogin() dipanggil di 04-auth.js
-   Fail ini hanya mendefinisikan fungsi; auth file yang start app.
 ============================================================= */
+
 /* ============================================================
    FOCC AUTH STATE LISTENER
-   Reaktif bila Supabase SDK ready / token berubah.
 
-   PATCH v2: guard guna `event|session`.
+   PATCH v2: guard `event|session`.
    PATCH v3: retry sampai SDK ready.
-   PATCH v4: grace period 3s untuk SIGNED_OUT.
-   PATCH v5 (2026-10): kesan "SDK loaded tapi .auth tak ready" —
-     berlaku bila Tracking Prevention block storage (Edge/Safari)
-     atau CDN partial load. Retry sampai .auth.onAuthStateChange
-     betul-betul wujud (max 30 saat), dan fallback ke auto-login
-     dari localStorage kalau SDK tetap fail.
+   PATCH v4: grace period 3s.
+   PATCH v5 (2026-10):
+     - grace 3s → 10s
+     - check `focc-supabase-auth-token` — kalau ada, ABAIKAN SIGNED_OUT
+     - polling 30s → 5s
 ============================================================= */
 (function(){
   let lastKey = '';
   let listenerRegistered = false;
 
   const BOOT_TIME = Date.now();
-  const SIGNED_OUT_GRACE_MS = 3000;
+  const SIGNED_OUT_GRACE_MS = 10000;   // 10 saat
 
   function isSupabaseAuthReady(){
     if (!window.FOCC_SUPABASE) return false;
@@ -625,14 +621,21 @@ async function initFOCC(){
   }
 
   function tryRecreateClient(){
-    // Cuba createClient semula kalau FOCC_SUPABASE wujud tapi .auth tak ready
     try{
       if (window.supabase && typeof window.supabase.createClient === 'function'){
-        // Guna URL & KEY dari 02-storage.js
         const url = (typeof FOCC_SUPABASE_URL !== 'undefined') ? FOCC_SUPABASE_URL : null;
         const key = (typeof FOCC_SUPABASE_KEY !== 'undefined') ? FOCC_SUPABASE_KEY : null;
         if (url && key){
-          const fresh = window.supabase.createClient(url, key);
+          const fresh = window.supabase.createClient(url, key, {
+            auth: {
+              storage: window.localStorage,
+              storageKey: 'focc-supabase-auth-token',
+              persistSession: true,
+              autoRefreshToken: true,
+              detectSessionInUrl: false,
+              flowType: 'pkce'
+            }
+          });
           if (fresh && fresh.auth && typeof fresh.auth.onAuthStateChange === 'function'){
             FOCC_SUPABASE = fresh;
             console.log('[FOCC] Supabase client recreated successfully');
@@ -649,7 +652,6 @@ async function initFOCC(){
   function attachAuthListener(){
     if (listenerRegistered) return true;
 
-    // Kalau FOCC_SUPABASE wujud tapi .auth tak ready → cuba recreate
     if (window.FOCC_SUPABASE && !isSupabaseAuthReady()){
       if (!tryRecreateClient()){
         return false;
@@ -669,8 +671,18 @@ async function initFOCC(){
         lastKey = key;
 
         if (event === 'SIGNED_OUT'){
-          const elapsed = Date.now() - BOOT_TIME;
           const hasLocal = !!localStorage.getItem(FOCC_SESSION_KEY);
+          const hasLocalAuthToken = !!localStorage.getItem('focc-supabase-auth-token');
+
+          // ⬇️ FIX v5: kalau session + token masih ada, abaikan SIGNED_OUT.
+          //    Punca: Tracking Prevention block SDK → SDK fire SIGNED_OUT
+          //    walaupun token masih sah. Kita biar user kekal logged in.
+          if (hasLocal && hasLocalAuthToken){
+            console.warn('[FOCC] SIGNED_OUT diabaikan — session + auth token masih ada dalam localStorage');
+            return;
+          }
+
+          const elapsed = Date.now() - BOOT_TIME;
           if (elapsed < SIGNED_OUT_GRACE_MS && hasLocal){
             console.warn('[FOCC] SIGNED_OUT dalam grace period — abaikan (SDK init race). Elapsed:', elapsed, 'ms');
             return;
@@ -707,21 +719,17 @@ async function initFOCC(){
   // Cuba sekarang
   if (attachAuthListener()) return;
 
-  // Belum ready — poll setiap 200ms sampai 30 saat
+  // Belum ready — poll setiap 200ms sampai 5 saat (dari 30s)
   console.warn('[FOCC] auth listener: SDK not ready — polling...');
   let tries = 0;
-  const MAX_TRIES = 150;  // 150 × 200ms = 30 saat
+  const MAX_TRIES = 25;  // 25 × 200ms = 5 saat
   const timer = setInterval(() => {
     tries++;
     if (attachAuthListener() || tries >= MAX_TRIES){
       clearInterval(timer);
       if (tries >= MAX_TRIES && !listenerRegistered){
-        console.error('[FOCC] auth listener: SDK gagal dimuat selepas 30 saat — fallback ke auto-login');
+        console.warn('[FOCC] auth listener: SDK gagal dimuat selepas 5 saat — fallback ke auto-login');
 
-        // ⬇️ FALLBACK: kalau SDK betul-betul tak load, tapi ada session
-        //    dalam localStorage, cuba auto-login terus. User tak sepatutnya
-        //    terkeluar ke login hanya sebab SDK tak load (Edge Tracking
-        //    Prevention, network block, CDN down).
         try{
           const raw = localStorage.getItem(FOCC_SESSION_KEY);
           if (raw){
