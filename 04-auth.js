@@ -14,15 +14,29 @@
 
    PATCH v4 (2026-10):
    - SKIP syncProviderFromSession() bila SDK tak ready.
-     Punca: syncProviderFromSession guna FOCC_SUPABASE → hang bila
-     SDK tak ready (Tracking Prevention block). User tunggu 30s.
-     Session data dalam localStorage SUDAH CUKUP untuk showApp().
+
+   PATCH v5 (2026-10):
+   - foccShowApp() tunjuk banner warning bila detect Tracking
+     Prevention block SDK. Ajar user cara whitelist.
+   - bugBadgeStart() / bugBadgeRefresh() skip polling bila SDK
+     tak ready — elak spam 401 pada console.
    ========================================================================= */
 
 /* ============================================================
    AUTO-LOGIN GUARD — elak dua panggilan serentak
 ============================================================= */
 let foccAutoLoginRunning = false;
+
+/* ============================================================
+   HELPER — SDK ready check (dikongsi merata fungsi)
+============================================================= */
+function foccIsSdkReady(){
+  return !!(
+    window.FOCC_SUPABASE &&
+    FOCC_SUPABASE.auth &&
+    typeof FOCC_SUPABASE.auth.getSession === 'function'
+  );
+}
 
 /* ============================================================
    LOGIN SCREEN HELPERS
@@ -52,6 +66,52 @@ function foccSetLoginBtnLoading(isLoading){
   }
 }
 
+/* ============================================================
+   TRACKING PREVENTION WARNING BANNER
+   Dipaparkan hanya sekali per sesi. Ajar user cara whitelist.
+============================================================= */
+function foccShowTrackingWarning(){
+  const content = document.getElementById('content');
+  if (!content) return;
+  if (document.getElementById('foccTrackingWarning')) return;   // sudah ada
+
+  const warn = document.createElement('div');
+  warn.id = 'foccTrackingWarning';
+  warn.className = 'notice notice-warning';
+  warn.style.cssText = 'margin-bottom:16px;line-height:1.55;';
+  warn.innerHTML = `
+    <div>
+      <strong style="font-size:13.5px;">&#9888; Browser is blocking required storage</strong>
+      <div style="margin-top:6px;font-size:12.5px;">
+        Your browser's Tracking Prevention is blocking FOCC from saving your login
+        session. Some features may not work — data may fail to save or load.
+      </div>
+      <div style="margin-top:10px;font-size:12.5px;">
+        <strong>To fix:</strong> In Edge, open
+        <em>Settings &rarr; Privacy, search, and services &rarr; Tracking prevention &rarr; Exceptions</em>,
+        then add these three URLs:
+      </div>
+      <div style="margin-top:6px;font-family:var(--font-mono);font-size:11.5px;background:var(--paper);padding:8px 10px;border-radius:6px;border:1px solid var(--line);">
+        https://hdorjlkwfldykmjhbctc.supabase.co<br>
+        https://unpkg.com<br>
+        https://cdn.jsdelivr.net
+      </div>
+      <div style="margin-top:8px;font-size:12px;">
+        Then refresh this page. This notice will disappear.
+      </div>
+    </div>
+  `;
+  content.insertBefore(warn, content.firstChild);
+}
+
+function foccRemoveTrackingWarning(){
+  const warn = document.getElementById('foccTrackingWarning');
+  if (warn) warn.remove();
+}
+
+/* ============================================================
+   SHOW APP
+============================================================= */
 function foccShowApp(session){
   document.getElementById('foccLoginScreen').style.display = 'none';
   document.getElementById('app').style.display = '';
@@ -85,8 +145,18 @@ function foccShowApp(session){
         `;
       }
     });
-    bugBadgeStart();
   }
+
+  // ⬇️ PATCH v5: kesan Tracking Prevention dan tunjuk warning
+  if (foccIsSdkReady()){
+    foccRemoveTrackingWarning();
+  } else {
+    // Tunggu initFOCC render content dulu, baru inject warning
+    setTimeout(foccShowTrackingWarning, 300);
+  }
+
+  // ⬇️ PATCH v5: bugBadgeStart() sekarang handle SDK check sendiri
+  bugBadgeStart();
 
   if (window.foccMascot && window.foccMascot.startLogin) window.foccMascot.startLogin(session);
 
@@ -118,6 +188,10 @@ function foccShowApp(session){
           .then(result => {
             console.log('VERSION UPDATED:', result);
           });
+      })
+      .catch(err => {
+        // Diamkan — biasa bila SDK tak ready. Bukan bug.
+        console.warn('[FOCC] getSystemUpdates skip:', err && err.message);
       });
   }
 }
@@ -141,8 +215,8 @@ async function loginFOCC(){
     foccShowLogin('Please enter your password.', true);
     return;
   }
-  if (!FOCC_SUPABASE){
-    foccShowLogin('Login service unavailable. Please try again.', true);
+  if (!foccIsSdkReady()){
+    foccShowLogin('Login service unavailable. Please check your internet or browser settings, then try again.', true);
     return;
   }
 
@@ -263,6 +337,8 @@ async function logoutFOCC(){
     if (passEl) passEl.value = '';
   }catch(e){}
 
+  foccRemoveTrackingWarning();
+
   try{ bugBadgeStop(); }catch(e){ console.error('logout: bugBadgeStop failed', e); }
   try{ clearTenantRuntimeState(); }catch(e){ console.error('logout: clearTenantRuntimeState failed', e); }
 
@@ -347,24 +423,16 @@ async function foccAutoLogin(){
     }
 
     /* ── PATCH v4: Kesan SDK tak ready ──
-       Kalau FOCC_SUPABASE tak wujud atau .auth tak ready, JANGAN cuba
-       getSession atau syncProviderFromSession (dua-dua akan hang).
-       Terus showApp() dengan session data dari localStorage — itu sahaja
-       yang user perlukan untuk mula guna sistem. */
-    const sdkReady = !!(
-      window.FOCC_SUPABASE &&
-      FOCC_SUPABASE.auth &&
-      typeof FOCC_SUPABASE.auth.getSession === 'function'
-    );
-
-    if (!sdkReady){
+       Kalau SDK tak ready, JANGAN cuba getSession atau
+       syncProviderFromSession (dua-dua akan hang).
+       Terus showApp() dengan session data dari localStorage. */
+    if (!foccIsSdkReady()){
       console.warn('[FOCC] autoLogin: SDK not ready — showApp terus (skip syncProvider)');
       foccShowApp(session);
       return;
     }
 
-    /* Retry getSession sampai 8 kali dengan delay 400ms
-       (total 3.2s) — Supabase SDK kadang belum ready bila refresh */
+    /* Retry getSession sampai 8 kali dengan delay 400ms */
     let authUser = null;
     let lastErr = null;
     let sessionError = null;
@@ -372,22 +440,19 @@ async function foccAutoLogin(){
 
     for (let attempt = 0; attempt < MAX_TRIES; attempt++){
       try{
-        if (FOCC_SUPABASE){
-          const sessRes = await FOCC_SUPABASE.auth.getSession();
-          if (sessRes && sessRes.error) sessionError = sessRes.error;
-          authUser = (sessRes && sessRes.data && sessRes.data.session)
-            ? sessRes.data.session.user
-            : null;
-          if (authUser){
-            console.log('[FOCC] autoLogin: auth OK (attempt', attempt + 1, ')');
-            break;
-          }
+        const sessRes = await FOCC_SUPABASE.auth.getSession();
+        if (sessRes && sessRes.error) sessionError = sessRes.error;
+        authUser = (sessRes && sessRes.data && sessRes.data.session)
+          ? sessRes.data.session.user
+          : null;
+        if (authUser){
+          console.log('[FOCC] autoLogin: auth OK (attempt', attempt + 1, ')');
+          break;
         }
       }catch(e){
         lastErr = e;
         console.warn('[FOCC] getSession attempt', attempt + 1, 'failed:', e);
       }
-      // Delay sebelum retry
       if (attempt < MAX_TRIES - 1){
         await new Promise(r => setTimeout(r, 400));
       }
@@ -905,6 +970,9 @@ function openBugDetailModal(bug){
 
 /* ============================================================
    BUG BADGE (dot merah pada "!")
+
+   PATCH v5: skip polling bila SDK tak ready — elak spam 401
+             pada console bila Tracking Prevention block storage.
 ============================================================= */
 function bugBadgeRender(count){
   const dot = document.getElementById('bugDot');
@@ -928,16 +996,32 @@ function bugBadgeRender(count){
 async function bugBadgeRefresh(){
   if (!isSuperAdmin()){ bugBadgeRender(0); return; }
   if (document.hidden) return;
+
+  // ⬇️ PATCH v5: skip bila SDK tak ready — elak 401 spam
+  if (!foccIsSdkReady()){
+    bugBadgeRender(0);
+    return;
+  }
+
   try{
     const res = await adminInvoke('list_bug_reports');
     const list = (res && res.data) || [];
     bugBadgeRender(list.filter(b => b.status === 'New').length);
   }catch(err){
-    console.warn('Bug badge refresh failed:', err);
+    // Diam saja — jangan spam console bila ada hiccup
+    // console.warn('Bug badge refresh failed:', err);
   }
 }
 
 function bugBadgeStart(){
+  // ⬇️ PATCH v5: kalau SDK tak ready, jangan mula polling.
+  //    Elak spam 401 setiap 60 detik.
+  if (!foccIsSdkReady()){
+    console.warn('[FOCC] bugBadgeStart: SDK not ready — skip polling (elak 401 spam)');
+    bugBadgeRender(0);
+    return;
+  }
+
   bugBadgeRefresh();
   if (bugBadgeTimer) clearInterval(bugBadgeTimer);
   bugBadgeTimer = setInterval(bugBadgeRefresh, BUG_BADGE_POLL_MS);
