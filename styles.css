@@ -4333,3 +4333,80 @@ html.theme-dark .depot-status-option.is-active {
   background: rgba(26,163,154,.08);
 }
 html.theme-dark .depot-detail-row { border-bottom-color: #1c252e; }
+/* ============================================================
+   DEPOT PHASE 6 — Drag & Drop + Export + Polish
+   ============================================================ */
+
+/* ---- Drag & Drop states ---- */
+.depot-slot[draggable="true"] {
+  cursor: grab;
+}
+.depot-slot[draggable="true"]:active {
+  cursor: grabbing;
+}
+.depot-slot.is-dragging {
+  opacity: 0.35;
+  transform: scale(.96);
+  cursor: grabbing;
+}
+.depot-slot.is-drop-valid {
+  border-color: var(--teal) !important;
+  border-width: 2px !important;
+  background: rgba(26,163,154,.14) !important;
+  box-shadow: 0 0 0 3px rgba(26,163,154,.28), 0 4px 12px rgba(26,163,154,.2) !important;
+  transform: scale(1.04);
+}
+.depot-slot.is-drop-invalid {
+  border-color: var(--red) !important;
+  border-width: 2px !important;
+  background: rgba(209,85,74,.08) !important;
+  cursor: not-allowed;
+}
+
+/* Smooth transitions bila switch block */
+.depot-main-grid {
+  transition: opacity .18s ease;
+}
+
+/* Legend tip style (kecil, muted) */
+.depot-legend-item[style*="margin-left:auto"] {
+  font-size: 11px;
+  letter-spacing: .01em;
+  user-select: none;
+}
+
+/* Better print/export button styling in header */
+@media (max-width: 900px) {
+  .depot-overview-header-right {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .depot-search-wrap {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .depot-search-input {
+    min-width: 0;
+    width: 100%;
+  }
+  .depot-filter-wrap {
+    flex: 1 1 auto;
+  }
+  .depot-filter-select {
+    width: 100%;
+  }
+}
+
+/* Dark mode — drag states */
+html.theme-dark .depot-slot.is-drop-valid {
+  background: rgba(26,163,154,.22) !important;
+  border-color: #5eead4 !important;
+  box-shadow: 0 0 0 3px rgba(26,163,154,.4), 0 4px 12px rgba(26,163,154,.3) !important;
+}
+html.theme-dark .depot-slot.is-drop-invalid {
+  background: rgba(209,85,74,.15) !important;
+  border-color: #f0a19a !important;
+}
+html.theme-dark .depot-slot.is-dragging {
+  opacity: 0.25;
+}

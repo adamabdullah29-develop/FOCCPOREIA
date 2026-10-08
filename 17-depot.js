@@ -2,8 +2,7 @@
    FOCC — 17-depot.js
    Depot Overview — main dashboard + full interactions.
    =========================================================================
-   Phase 5 — Add / Change Status / Set OUT / Move / Delete / Search / Filter
-             / Right-click / Keyboard / Undo / Print PDF
+   Phase 6 — Drag & Drop / Export CSV / Animation Polish
    ========================================================================= */
 
 /* ============================================================
@@ -124,6 +123,75 @@ async function depotSaveAll(containers){
 }
 
 /* ============================================================
+   EXPORT CSV
+============================================================= */
+
+function depotExportCSV(containers, layout, filterLabel){
+  const headers = [
+    'Container No','Type','Status','Block','Slot','Stack',
+    'Customer','Job No','Vessel','Weight (kg)',
+    'In Date','Out Date','Departed',
+    'Days in Yard','Remarks','Created By'
+  ];
+
+  const rows = containers.map(c => {
+    const days = depotDaysInYard(c);
+    const inTxt = c.inDate ? new Date(c.inDate).toISOString().slice(0,10) : '';
+    const outTxt = c.outDate ? new Date(c.outDate).toISOString().slice(0,10) : '';
+    return [
+      c.containerNo || '',
+      c.type || '',
+      c.status || '',
+      c.blockName || '',
+      c.slotNo || '',
+      c.stackLevel || 1,
+      c.customer || '',
+      c.jobNo || '',
+      c.vessel || '',
+      c.weight || '',
+      inTxt,
+      outTxt,
+      c.departed ? 'Yes' : 'No',
+      days,
+      c.remarks || '',
+      c.createdBy || '',
+    ];
+  });
+
+  const q = v => {
+    const s = String(v == null ? '' : v);
+    if (s.includes(',') || s.includes('"') || s.includes('\n')){
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  };
+
+  const lines = [
+    '# FOCC Depot Export',
+    `# Depot: ${layout.depotName || 'My Depot'}`,
+    `# Filter: ${filterLabel || 'All'}`,
+    `# Exported: ${new Date().toLocaleString('en-GB')}`,
+    `# Total: ${rows.length} container(s)`,
+    '',
+    headers.map(q).join(','),
+  ];
+  rows.forEach(r => lines.push(r.map(q).join(',')));
+
+  const csv = lines.join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().slice(0,10);
+  const safe = String(layout.depotName || 'Depot').replace(/[^\w\-]+/g, '-');
+  a.href = url;
+  a.download = `FOCC-Depot-${safe}-${ts}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ============================================================
    MODAL HELPERS (shared)
 ============================================================= */
 
@@ -147,7 +215,6 @@ function depotCloseModal(){
 
 function openDepotAddContainer(block, preslotNo, onSubmit){
   const slotNo = preslotNo || '';
-  const todayStr = toISODateLocal(new Date());
 
   const html = `
     <h4>Add Container</h4>
@@ -208,22 +275,18 @@ function openDepotAddContainer(block, preslotNo, onSubmit){
     </div>`;
 
   const box = depotModalWrap(html);
-
   const containerNoInput = box.querySelector('#dcContainerNo');
   setTimeout(() => containerNoInput && containerNoInput.focus(), 50);
 
   containerNoInput.addEventListener('input', () => {
     containerNoInput.value = containerNoInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   });
-
   const slotInput = box.querySelector('#dcSlot');
   slotInput.addEventListener('input', () => {
     slotInput.value = slotInput.value.toUpperCase().replace(/[^A-Z0-9-]/g, '');
   });
 
-  const close = () => depotCloseModal();
-  box.querySelector('#dcCancel').onclick = close;
-
+  box.querySelector('#dcCancel').onclick = depotCloseModal;
   box.querySelector('#dcSave').onclick = async () => {
     const errEl = box.querySelector('#dcError');
     const containerNo = box.querySelector('#dcContainerNo').value.trim().toUpperCase();
@@ -256,9 +319,8 @@ function openDepotAddContainer(block, preslotNo, onSubmit){
       createdBy: getSessionEmail() || '',
       createdAt: new Date().toISOString(),
     };
-
     errEl.style.display = 'none';
-    close();
+    depotCloseModal();
     if (onSubmit) await onSubmit(payload);
   };
 }
@@ -274,29 +336,20 @@ function openDepotChangeStatus(container, onSubmit){
       Container: <strong>${escapeHtml(container.containerNo || '-')}</strong>
     </div>
     <div class="depot-status-picker">
-      <label class="depot-status-option ${container.status==='ok'?'is-active':''}" data-value="ok">
+      <label class="depot-status-option ${container.status==='ok'?'is-active':''}">
         <input type="radio" name="dcStatus" value="ok" ${container.status==='ok'?'checked':''}>
         <span class="depot-status-option-dot" style="background:#3f9a6e;"></span>
-        <div class="depot-status-option-body">
-          <b>OK</b>
-          <small>Container in good condition, ready for use.</small>
-        </div>
+        <div class="depot-status-option-body"><b>OK</b><small>Container in good condition, ready for use.</small></div>
       </label>
-      <label class="depot-status-option ${container.status==='repairing'?'is-active':''}" data-value="repairing">
+      <label class="depot-status-option ${container.status==='repairing'?'is-active':''}">
         <input type="radio" name="dcStatus" value="repairing" ${container.status==='repairing'?'checked':''}>
         <span class="depot-status-option-dot" style="background:#e6a339;"></span>
-        <div class="depot-status-option-body">
-          <b>Repairing</b>
-          <small>Under repair, not available.</small>
-        </div>
+        <div class="depot-status-option-body"><b>Repairing</b><small>Under repair, not available.</small></div>
       </label>
-      <label class="depot-status-option ${container.status==='damaged'?'is-active':''}" data-value="damaged">
+      <label class="depot-status-option ${container.status==='damaged'?'is-active':''}">
         <input type="radio" name="dcStatus" value="damaged" ${container.status==='damaged'?'checked':''}>
         <span class="depot-status-option-dot" style="background:#d1554a;"></span>
-        <div class="depot-status-option-body">
-          <b>Damaged</b>
-          <small>Broken, needs assessment.</small>
-        </div>
+        <div class="depot-status-option-body"><b>Damaged</b><small>Broken, needs assessment.</small></div>
       </label>
     </div>
     <div class="formfield full" style="margin-top:14px;">
@@ -309,7 +362,6 @@ function openDepotChangeStatus(container, onSubmit){
     </div>`;
 
   const box = depotModalWrap(html);
-
   box.querySelectorAll('.depot-status-option').forEach(el => {
     el.addEventListener('click', () => {
       box.querySelectorAll('.depot-status-option').forEach(x => x.classList.remove('is-active'));
@@ -317,7 +369,6 @@ function openDepotChangeStatus(container, onSubmit){
       el.querySelector('input[type=radio]').checked = true;
     });
   });
-
   box.querySelector('#csCancel').onclick = depotCloseModal;
   box.querySelector('#csSave').onclick = async () => {
     const sel = box.querySelector('input[name="dcStatus"]:checked');
@@ -337,7 +388,7 @@ function openDepotSetOut(container, onSubmit){
   const html = `
     <h4>Set Container OUT</h4>
     <div class="notice notice-warning" style="margin-bottom:14px;">
-      This will mark <strong>${escapeHtml(container.containerNo || '-')}</strong> as <strong>departed</strong>. The slot will become empty.
+      Mark <strong>${escapeHtml(container.containerNo || '-')}</strong> as <strong>departed</strong>? Slot will become empty.
     </div>
     <div class="formgrid">
       <div class="formfield">
@@ -423,7 +474,6 @@ function openDepotMoveSlot(container, layout, allContainers, onSubmit){
     if (parsed.row < 1 || parsed.row > (block.rows || 30)){ errEl.style.display='block'; errEl.textContent='Slot row out of range.'; return; }
     if (parsed.col < 1 || parsed.col > (block.cols || 20)){ errEl.style.display='block'; errEl.textContent='Slot column out of range.'; return; }
 
-    // Check if target slot occupied
     const existing = (allContainers || []).find(c =>
       c && !c.departed &&
       c.blockId === blockId &&
@@ -465,69 +515,22 @@ function openDepotContainerDetail(container){
         ${escapeHtml(statusLabel)}
       </div>
     </div>
-
     <div class="depot-detail-grid">
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Type</span>
-        <span class="depot-detail-v">${escapeHtml(c.type || '-')}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Size (L × W × H)</span>
-        <span class="depot-detail-v">${escapeHtml(sizeTxt)}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Weight</span>
-        <span class="depot-detail-v">${c.weight ? Number(c.weight).toLocaleString() + ' kg' : '-'}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Customer</span>
-        <span class="depot-detail-v">${escapeHtml(c.customer || '-')}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Job No.</span>
-        <span class="depot-detail-v">${escapeHtml(c.jobNo || '-')}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Vessel</span>
-        <span class="depot-detail-v">${escapeHtml(c.vessel || '-')}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Block</span>
-        <span class="depot-detail-v">${escapeHtml(c.blockName || '-')}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Slot</span>
-        <span class="depot-detail-v">${escapeHtml(c.slotNo || '-')}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Stack Level</span>
-        <span class="depot-detail-v">${escapeHtml(String(c.stackLevel || 1))}</span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Days in Yard</span>
-        <span class="depot-detail-v"><span class="depot-days-badge" style="background:${daysR.color}1a;color:${daysR.color};">${escapeHtml(daysR.label)}</span></span>
-      </div>
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">In Date</span>
-        <span class="depot-detail-v">${escapeHtml(inDateTxt)}</span>
-      </div>
-      ${c.departed ? `
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Out Date</span>
-        <span class="depot-detail-v">${escapeHtml(outDateTxt)}</span>
-      </div>` : ''}
-      ${c.remarks ? `
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Remarks</span>
-        <span class="depot-detail-v">${escapeHtml(c.remarks)}</span>
-      </div>` : ''}
-      ${c.createdBy ? `
-      <div class="depot-detail-row">
-        <span class="depot-detail-k">Created By</span>
-        <span class="depot-detail-v">${escapeHtml(c.createdBy)}</span>
-      </div>` : ''}
+      <div class="depot-detail-row"><span class="depot-detail-k">Type</span><span class="depot-detail-v">${escapeHtml(c.type || '-')}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Size (L × W × H)</span><span class="depot-detail-v">${escapeHtml(sizeTxt)}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Weight</span><span class="depot-detail-v">${c.weight ? Number(c.weight).toLocaleString() + ' kg' : '-'}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Customer</span><span class="depot-detail-v">${escapeHtml(c.customer || '-')}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Job No.</span><span class="depot-detail-v">${escapeHtml(c.jobNo || '-')}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Vessel</span><span class="depot-detail-v">${escapeHtml(c.vessel || '-')}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Block</span><span class="depot-detail-v">${escapeHtml(c.blockName || '-')}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Slot</span><span class="depot-detail-v">${escapeHtml(c.slotNo || '-')}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Stack Level</span><span class="depot-detail-v">${escapeHtml(String(c.stackLevel || 1))}</span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">Days in Yard</span><span class="depot-detail-v"><span class="depot-days-badge" style="background:${daysR.color}1a;color:${daysR.color};">${escapeHtml(daysR.label)}</span></span></div>
+      <div class="depot-detail-row"><span class="depot-detail-k">In Date</span><span class="depot-detail-v">${escapeHtml(inDateTxt)}</span></div>
+      ${c.departed ? `<div class="depot-detail-row"><span class="depot-detail-k">Out Date</span><span class="depot-detail-v">${escapeHtml(outDateTxt)}</span></div>` : ''}
+      ${c.remarks ? `<div class="depot-detail-row"><span class="depot-detail-k">Remarks</span><span class="depot-detail-v">${escapeHtml(c.remarks)}</span></div>` : ''}
+      ${c.createdBy ? `<div class="depot-detail-row"><span class="depot-detail-k">Created By</span><span class="depot-detail-v">${escapeHtml(c.createdBy)}</span></div>` : ''}
     </div>
-
     <div class="modalfoot">
       <button class="btn primary" id="detailClose">Close</button>
     </div>`;
@@ -541,7 +544,6 @@ function openDepotContainerDetail(container){
 ============================================================= */
 
 function openDepotContextMenu(x, y, container, actions){
-  // Remove any existing menu
   document.querySelectorAll('.depot-ctxmenu').forEach(el => el.remove());
 
   const menu = document.createElement('div');
@@ -570,7 +572,6 @@ function openDepotContextMenu(x, y, container, actions){
 
   document.body.appendChild(menu);
 
-  // Ensure it stays inside viewport
   const rect = menu.getBoundingClientRect();
   if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 10) + 'px';
   if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 10) + 'px';
@@ -587,10 +588,7 @@ function openDepotContextMenu(x, y, container, actions){
       e.stopPropagation();
       const id = btn.dataset.ctx;
       closeMenu();
-      if (id === 'copy'){
-        copyTextToClipboard(container.containerNo || '');
-        return;
-      }
+      if (id === 'copy'){ copyTextToClipboard(container.containerNo || ''); return; }
       if (actions && actions[id]) actions[id]();
     });
   });
@@ -613,7 +611,6 @@ function showDepotUndoBanner(message, onUndo){
   document.body.appendChild(banner);
 
   let timer = setTimeout(() => { banner.remove(); }, 10000);
-
   banner.querySelector('#depotUndoBtn').onclick = () => {
     clearTimeout(timer);
     banner.remove();
@@ -638,11 +635,8 @@ async function depotPrintYardPlan(layout, containers){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: true });
 
-  const M = 12;
-  const R = 285;
-  const INK = [17, 17, 17];
-  const GREY = [110, 110, 110];
-  const LINE = [180, 180, 180];
+  const M = 12, R = 285;
+  const INK = [17,17,17], GREY = [110,110,110], LINE = [180,180,180];
 
   function txt(text, x, y, size, bold, color){
     doc.setFont('helvetica', bold ? 'bold' : 'normal');
@@ -651,7 +645,6 @@ async function depotPrintYardPlan(layout, containers){
     doc.setTextColor(c[0], c[1], c[2]);
     doc.text(String(text == null ? '' : text), x, y);
   }
-
   function txtC(text, cx, y, size, bold, color){
     doc.setFont('helvetica', bold ? 'bold' : 'normal');
     doc.setFontSize(size || 9.5);
@@ -659,15 +652,13 @@ async function depotPrintYardPlan(layout, containers){
     doc.setTextColor(c[0], c[1], c[2]);
     doc.text(String(text == null ? '' : text), cx, y, { align: 'center' });
   }
-
   function rule(x1, y1, x2, y2, w){
     doc.setDrawColor(LINE[0], LINE[1], LINE[2]);
     doc.setLineWidth(w || 0.2);
     doc.line(x1, y1, x2, y2);
   }
-
   function box(x, y, w, h, fillRgb){
-    doc.setDrawColor(150, 150, 150);
+    doc.setDrawColor(150,150,150);
     doc.setLineWidth(0.2);
     if (fillRgb){
       doc.setFillColor(fillRgb[0], fillRgb[1], fillRgb[2]);
@@ -684,33 +675,26 @@ async function depotPrintYardPlan(layout, containers){
     pageNum += 1;
     if (pageNum > 1) doc.addPage('a4', 'landscape');
 
-    // Header
-    txt('Company: ' + escapeHtml(layout.depotName || ''), M, 15, 11, true);
+    txt('Company: ' + (layout.depotName || ''), M, 15, 11, true);
     txt('YARD PLAN — Block ' + (block.name || '?'), M, 22, 14, true);
     txt('Page ' + pageNum + ' of ' + totalPages, R, 15, 9, false, GREY);
     txt('Generated: ' + new Date().toLocaleString('en-GB'), R, 20, 8, false, GREY);
     rule(M, 26, R, 26, 0.5);
 
-    // Block info
     txt('Block: ' + (block.name || '?'), M, 34, 10, true);
     txt('Layout: ' + (block.cols || 0) + ' × ' + (block.rows || 0) + ' (' + ((block.cols||0)*(block.rows||0)) + ' slots)', M, 40, 9, false);
     txt('Stack limit: ' + (block.stackLimit || 1), M, 46, 9, false);
 
     const cols = block.cols || 6;
     const rows = block.rows || 8;
-
-    // Grid area
     const gridTop = 54;
-    const cellW = (R - M) / (cols + 1); // +1 for row header
+    const cellW = (R - M) / (cols + 1);
     const cellH = Math.min(20, (270 - gridTop) / rows);
 
-    // Column headers
     for (let c = 1; c <= cols; c++){
       const x = M + c * cellW;
       txtC(String(c).padStart(2,'0'), x + cellW/2, gridTop - 2, 8, true, GREY);
     }
-
-    // Rows
     for (let r = 1; r <= rows; r++){
       const y = gridTop + (r - 1) * cellH;
       const rowLetter = String.fromCharCode(64 + r);
@@ -724,53 +708,40 @@ async function depotPrintYardPlan(layout, containers){
           cn.blockId === block.blockId &&
           String(cn.slotNo || '').toUpperCase() === slotNo.toUpperCase()
         );
-
         let fillRgb = null;
         if (container){
           const statusColor = (typeof DEPOT_STATUS_COLORS !== 'undefined' && DEPOT_STATUS_COLORS[container.status]) || '#3f9a6e';
-          // Convert hex to rgb light tint
           const hex = statusColor.replace('#','');
           const rr = parseInt(hex.substring(0,2), 16);
           const gg = parseInt(hex.substring(2,4), 16);
           const bb = parseInt(hex.substring(4,6), 16);
-          // Light tint
           fillRgb = [Math.round(rr*0.15 + 255*0.85), Math.round(gg*0.15 + 255*0.85), Math.round(bb*0.15 + 255*0.85)];
         }
-
         box(x, y, cellW - 0.5, cellH - 0.5, fillRgb);
 
         if (container){
           txtC(slotNo, x + cellW/2, y + 5, 6.5, false, GREY);
           txtC(String(container.containerNo || '').slice(0, 11), x + cellW/2, y + cellH/2 + 2, 7, true);
         } else {
-          txtC(slotNo, x + cellW/2, y + cellH/2 + 2, 7, false, [200, 200, 200]);
+          txtC(slotNo, x + cellW/2, y + cellH/2 + 2, 7, false, [200,200,200]);
         }
       }
     }
-
-    // Legend
     const legY = gridTop + rows * cellH + 8;
     txt('Legend:', M, legY, 9, true);
-    const items = [
-      { label: 'OK', color: '#3f9a6e' },
-      { label: 'Repairing', color: '#e6a339' },
-      { label: 'Damaged', color: '#d1554a' },
-    ];
-    items.forEach((it, i) => {
+    [['OK','#3f9a6e'],['Repairing','#e6a339'],['Damaged','#d1554a']].forEach((it, i) => {
       const x = M + 24 + i * 40;
-      const hex = it.color.replace('#','');
+      const hex = it[1].replace('#','');
       doc.setFillColor(parseInt(hex.substring(0,2),16), parseInt(hex.substring(2,4),16), parseInt(hex.substring(4,6),16));
       doc.setDrawColor(150,150,150);
       doc.setLineWidth(0.2);
       doc.rect(x, legY - 3, 3.5, 3.5, 'FD');
-      txt(it.label, x + 6, legY, 9, false);
+      txt(it[0], x + 6, legY, 9, false);
     });
 
-    // Footer
     rule(M, 200, R, 200, 0.2);
-    txt('FOCC — Fleet Operations Command Center · Yard Plan · Generated by ' + (getSessionEmail() || 'user'), M, 205, 8, false, GREY);
+    txt('FOCC — Fleet Operations Control Centre · Yard Plan · Generated by ' + (getSessionEmail() || 'user'), M, 205, 8, false, GREY);
   }
-
   doc.save('Yard-Plan-' + (layout.depotName || 'Depot').replace(/\s+/g,'-') + '-' + new Date().toISOString().slice(0,10) + '.pdf');
 }
 
@@ -803,11 +774,11 @@ async function renderDepotOverview(){
     return wrap;
   }
 
-  // State
   let activeBlockId = layout.blocks[0].blockId;
   let selectedContainerId = null;
   let searchTerm = '';
   let statusFilter = 'all';
+  let dragState = null; // { containerId, fromBlockId, fromSlotNo }
 
   const sortedBlocks = layout.blocks.slice().sort((a,b) => (a.order || 0) - (b.order || 0));
 
@@ -834,7 +805,7 @@ async function renderDepotOverview(){
     return { total: act.length, inYard: act.length, departedToday, damaged: byStatus.damaged, ok: byStatus.ok, repairing: byStatus.repairing };
   }
 
-  /* ---------- RENDER FUNCTIONS ---------- */
+  /* ---------- RENDER ---------- */
 
   function renderHeader(){
     const kpi = computeKPIs();
@@ -857,11 +828,15 @@ async function renderDepotOverview(){
               <option value="damaged"${statusFilter==='damaged'?' selected':''}>Damaged</option>
             </select>
           </div>
-          <button class="btn" id="depotPrintBtn">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"></path><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></path></svg>
+          <button class="btn" id="depotExportBtn" title="Export CSV">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            Export
+          </button>
+          <button class="btn" id="depotPrintBtn" title="Print Yard Plan">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7"></path><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
             Print
           </button>
-          <button class="btn primary" id="depotAddBtn">
+          <button class="btn primary" id="depotAddBtn" title="Add Container (N)">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
             Add Container
           </button>
@@ -969,6 +944,7 @@ async function renderDepotOverview(){
     const container = getContainerAtSlot(block, slotNo);
     const isSelected = container && selectedContainerId === container.containerId;
     const dimmed = container && !matchesFilter(container);
+    const isDragging = container && dragState && dragState.containerId === container.containerId;
 
     if (!container){
       return `
@@ -983,7 +959,8 @@ async function renderDepotOverview(){
     const statusLabel = (typeof DEPOT_STATUS_LABELS !== 'undefined' && DEPOT_STATUS_LABELS[container.status]) || container.status;
 
     return `
-      <div class="depot-slot is-occupied${isSelected ? ' is-selected' : ''}${dimmed ? ' is-dimmed' : ''}"
+      <div class="depot-slot is-occupied${isSelected ? ' is-selected' : ''}${dimmed ? ' is-dimmed' : ''}${isDragging ? ' is-dragging' : ''}"
+           draggable="true"
            data-slot="${slotNo}"
            data-block-id="${block.blockId}"
            data-container-id="${container.containerId}"
@@ -1037,6 +1014,7 @@ async function renderDepotOverview(){
         <span class="depot-legend-item"><span class="depot-legend-dot" style="background:#e6a339;"></span> Repairing</span>
         <span class="depot-legend-item"><span class="depot-legend-dot" style="background:#d1554a;"></span> Damaged</span>
         <span class="depot-legend-item"><span class="depot-legend-dot is-empty"></span> Empty Slot</span>
+        <span class="depot-legend-item" style="margin-left:auto;color:var(--muted);font-weight:500;">💡 Tip: Drag container to move · Right-click for menu</span>
       </div>
     `;
   }
@@ -1071,7 +1049,7 @@ async function renderDepotOverview(){
               <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
             </svg>
             <div class="depot-side-panel-empty-title">No container selected</div>
-            <div class="depot-side-panel-empty-sub">Click any container on the yard grid to see its details here. Right-click for quick actions.</div>
+            <div class="depot-side-panel-empty-sub">Click any container on the yard grid to see its details here. Drag to move. Right-click for quick actions.</div>
           </div>
         </div>
       `;
@@ -1220,12 +1198,11 @@ async function renderDepotOverview(){
   /* ---------- WIRING ---------- */
 
   function wireAll(block){
-    // Header — Search
+    // Search
     const searchInput = wrap.querySelector('#depotSearch');
     if (searchInput){
       searchInput.addEventListener('input', () => {
         searchTerm = searchInput.value;
-        // Just re-render grid + tabs + side panel (keep search input focused)
         const gridHost = wrap.querySelector('.depot-main-grid');
         const tabsHost = wrap.querySelector('.depot-tabs');
         const kpiHost = wrap.querySelector('.depot-kpi-grid');
@@ -1246,7 +1223,7 @@ async function renderDepotOverview(){
       });
     }
 
-    // Header — Filter
+    // Filter
     const filterSel = wrap.querySelector('#depotStatusFilter');
     if (filterSel){
       filterSel.addEventListener('change', () => {
@@ -1266,13 +1243,29 @@ async function renderDepotOverview(){
       });
     }
 
-    // Header — Print
+    // Export CSV
+    const exportBtn = wrap.querySelector('#depotExportBtn');
+    if (exportBtn){
+      exportBtn.onclick = () => {
+        const all = getActiveContainers();
+        const filtered = statusFilter === 'all' && !searchTerm
+          ? all
+          : all.filter(matchesFilter);
+        const label = [];
+        if (statusFilter !== 'all') label.push('status=' + statusFilter);
+        if (searchTerm) label.push('search="' + searchTerm + '"');
+        const filterLabel = label.length ? label.join(' & ') : 'All active containers';
+        depotExportCSV(filtered, layout, filterLabel);
+      };
+    }
+
+    // Print PDF
     const printBtn = wrap.querySelector('#depotPrintBtn');
     if (printBtn){
       printBtn.onclick = () => depotPrintYardPlan(layout, allContainers);
     }
 
-    // Header — Add Container
+    // Add Container
     const addBtn = wrap.querySelector('#depotAddBtn');
     if (addBtn){
       addBtn.onclick = () => {
@@ -1293,15 +1286,24 @@ async function renderDepotOverview(){
   function wireTabs(){
     wrap.querySelectorAll('.depot-tab').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (btn.dataset.blockId === activeBlockId) return;
         activeBlockId = btn.dataset.blockId;
         selectedContainerId = null;
-        paint();
+        // Fade animation on grid
+        const gridCard = wrap.querySelector('.depot-grid-card');
+        if (gridCard){
+          gridCard.style.opacity = '0';
+          gridCard.style.transition = 'opacity .15s ease';
+          setTimeout(() => { paint(); }, 150);
+        } else {
+          paint();
+        }
       });
     });
   }
 
   function wireGridAndPanel(block){
-    // Click container → select
+    // Click + context menu + drag for occupied
     wrap.querySelectorAll('.depot-slot.is-occupied').forEach(el => {
       el.addEventListener('click', () => {
         selectedContainerId = el.dataset.containerId;
@@ -1314,10 +1316,7 @@ async function renderDepotOverview(){
         const containerId = el.dataset.containerId;
         const container = allContainers.find(x => x.containerId === containerId);
         if (!container) return;
-
-        // Auto-select for context
         selectedContainerId = containerId;
-
         openDepotContextMenu(e.clientX, e.clientY, container, {
           detail: () => openDepotContainerDetail(container),
           'change-status': () => handleChangeStatus(container),
@@ -1326,11 +1325,106 @@ async function renderDepotOverview(){
           delete: () => handleDelete(container),
         });
       });
+
+      // ---- DRAG START ----
+      el.addEventListener('dragstart', (e) => {
+        const containerId = el.dataset.containerId;
+        const container = allContainers.find(x => x.containerId === containerId);
+        if (!container) return;
+        dragState = {
+          containerId: container.containerId,
+          fromBlockId: container.blockId,
+          fromSlotNo: container.slotNo,
+        };
+        el.classList.add('is-dragging');
+        try{
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', container.containerNo || '');
+        }catch(err){}
+      });
+
+      el.addEventListener('dragend', () => {
+        el.classList.remove('is-dragging');
+        dragState = null;
+        wrap.querySelectorAll('.depot-slot').forEach(s => s.classList.remove('is-drop-valid', 'is-drop-invalid'));
+      });
     });
 
-    // Click empty slot → Add
+    // ---- DROP TARGETS (all slots — occupied + empty) ----
+    wrap.querySelectorAll('.depot-slot').forEach(el => {
+      el.addEventListener('dragover', (e) => {
+        if (!dragState) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const targetSlot = el.dataset.slot;
+        if (dragState.fromSlotNo === targetSlot && el.dataset.blockId === dragState.fromBlockId) return;
+        const isOccupied = el.classList.contains('is-occupied');
+        el.classList.add(isOccupied ? 'is-drop-invalid' : 'is-drop-valid');
+      });
+
+      el.addEventListener('dragleave', () => {
+        el.classList.remove('is-drop-valid', 'is-drop-invalid');
+      });
+
+      el.addEventListener('drop', async (e) => {
+        if (!dragState) return;
+        e.preventDefault();
+        el.classList.remove('is-drop-valid', 'is-drop-invalid');
+
+        const targetBlockId = el.dataset.blockId;
+        const targetSlot = el.dataset.slot;
+        const targetBlock = sortedBlocks.find(b => b.blockId === targetBlockId);
+
+        if (!targetBlock){ dragState = null; return; }
+        if (dragState.fromBlockId === targetBlockId && dragState.fromSlotNo === targetSlot){
+          dragState = null;
+          return;
+        }
+
+        // Check target occupied
+        const occupied = getActiveContainers().find(c =>
+          c.blockId === targetBlockId &&
+          String(c.slotNo || '').toUpperCase() === targetSlot.toUpperCase() &&
+          c.containerId !== dragState.containerId
+        );
+        if (occupied){
+          alert(`Slot ${targetSlot} is occupied by ${occupied.containerNo}.`);
+          dragState = null;
+          return;
+        }
+
+        const idx = allContainers.findIndex(x => x.containerId === dragState.containerId);
+        if (idx < 0){ dragState = null; return; }
+
+        allContainers[idx] = Object.assign({}, allContainers[idx], {
+          blockId: targetBlockId,
+          blockName: targetBlock.name,
+          slotNo: targetSlot,
+          updatedAt: new Date().toISOString(),
+          updatedBy: getSessionEmail() || '',
+        });
+
+        const prevBlockId = dragState.fromBlockId;
+        dragState = null;
+
+        try{
+          await depotSaveAll(allContainers);
+          flashSaved();
+        }catch(err){
+          console.error('Drag save failed:', err);
+          alert('Save failed: ' + (err && err.message || err));
+        }
+
+        // Switch active block to target if changed
+        if (prevBlockId !== targetBlockId) activeBlockId = targetBlockId;
+        paint();
+      });
+    });
+
+    // Click empty slot → Add (only if not from drag)
     wrap.querySelectorAll('.depot-slot.is-empty').forEach(el => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', (e) => {
+        if (dragState) return;
         openDepotAddContainer(block, el.dataset.slot, async (newContainer) => {
           allContainers.push(newContainer);
           await depotSaveAll(allContainers);
@@ -1362,8 +1456,7 @@ async function renderDepotOverview(){
       const idx = allContainers.findIndex(x => x.containerId === container.containerId);
       if (idx >= 0){
         allContainers[idx] = Object.assign({}, allContainers[idx], {
-          status,
-          statusNote,
+          status, statusNote,
           updatedAt: new Date().toISOString(),
           updatedBy: getSessionEmail() || '',
         });
@@ -1385,7 +1478,6 @@ async function renderDepotOverview(){
         });
         await depotSaveAll(allContainers);
         flashSaved();
-        // Switch to new block
         activeBlockId = blockId;
         paint();
       }
@@ -1409,7 +1501,6 @@ async function renderDepotOverview(){
         selectedContainerId = null;
         paint();
 
-        // Undo banner
         showDepotUndoBanner(
           `Container ${container.containerNo} set OUT.`,
           async () => {
@@ -1440,10 +1531,9 @@ async function renderDepotOverview(){
     paint();
   }
 
-  /* ---------- KEYBOARD SHORTCUTS ---------- */
+  /* ---------- KEYBOARD ---------- */
 
   function keyHandler(e){
-    // Ignore if typing in input/textarea
     const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
     if (e.key === 'n' || e.key === 'N'){
@@ -1457,7 +1547,6 @@ async function renderDepotOverview(){
     }
   }
   document.addEventListener('keydown', keyHandler);
-  // Cleanup when page changes — remove on next render
   wrap.addEventListener('DOMNodeRemoved', () => {
     document.removeEventListener('keydown', keyHandler);
   });
