@@ -17,15 +17,19 @@
      (Tracking Prevention block SDK → SDK fire SIGNED_OUT walaupun
       token masih sah)
    - polling turun 30s → 5s (fallback lebih laju)
+
+   PATCH v6 (2026-10):
+   - Grace period 10s → 20s (SDK kadang lambat fire)
+   - Timeout poll 25 tries (5s) → 75 tries (15s) — SDK kadang ambil
+     8-10s di network perlahan atau bila Tracking Prevention block.
+   - foccAutoLogin() dah handle SDK-not-ready dengan betul (lihat
+     04-auth.js PATCH v6) — jadi kita tak perlu logout di sini.
    ========================================================================= */
 
 /* =========================================================================
    BAHAGIAN A — ROUTES + NAV_STRUCTURE
    ========================================================================= */
 
-/* ============================================================
-   ROUTES — peta semua page
-============================================================= */
 const ROUTES = {
   overview:            { title:'Main Menu', crumb:'Overview', render: renderOverview },
   mileage:             { title:'Truck Mileage', crumb:'Operation', render: () => renderDataPage('mileage') },
@@ -249,9 +253,6 @@ const NAV_STRUCTURE = [
    BAHAGIAN B — buildNav, goTo, initFOCC, theme, event listeners
    ========================================================================= */
 
-/* ============================================================
-   SIDEBAR NAV
-============================================================= */
 function reloadToRoute(routeKey){
   try {
     const nw = document.getElementById('navwrap');
@@ -593,30 +594,28 @@ async function initFOCC(){
 
 /* ============================================================
    KICKOFF — foccAutoLogin() dipanggil di 04-auth.js
-============================================================= */
-/* ============================================================
+   ============================================================
    FOCC AUTH STATE LISTENER + KICKOFF
 
    PATCH v6 (2026-10):
-   - Buang dependency pada `.onAuthStateChange` — ia kadang tak bind
-     pada SDK partial-load (Tracking Prevention, CDN partial).
-   - Guna `.auth.getSession` sebagai readiness check.
-   - Panggil `foccAutoLogin()` terus bila SDK ready.
-   - Polling 5s: cuba `attachAuthListener` (kalau onAuthStateChange ada),
-     tapi KALAU TAK ADA pun, terus trigger auto-login.
-============================================================= */
+   - Timeout poll 25 tries (5s) → 75 tries (15s).
+   - Grace period 10s → 20s.
+   - Semua logik SDK-not-ready dihandle dalam foccAutoLogin().
+   ============================================================ */
 (function(){
   let lastKey = '';
   let listenerRegistered = false;
   let autoLoginTriggered = false;
 
   const BOOT_TIME = Date.now();
-  const SIGNED_OUT_GRACE_MS = 10000;
+  // 20s: SDK kadang fire SIGNED_OUT palsu lepas 15s bila Tracking
+  // Prevention block — naik dari 10s → 20s supaya kita tak logout
+  // user yang session-nya masih sah.
+  const SIGNED_OUT_GRACE_MS = 20000;
 
   function isAuthClientReady(){
     if (!window.FOCC_SUPABASE) return false;
     if (!FOCC_SUPABASE.auth) return false;
-    // Guna getSession sebagai readiness — lebih universal dari onAuthStateChange
     if (typeof FOCC_SUPABASE.auth.getSession !== 'function') return false;
     return true;
   }
@@ -726,25 +725,25 @@ async function initFOCC(){
 
   // 1) Kalau SDK ready sekarang — cuba attach listener + trigger
   if (isAuthClientReady()){
-    attachAuthListener();   // ok kalau fail — kita tak kisah
+    attachAuthListener();
     console.log('[FOCC] SDK ready at boot — trigger auto-login');
     setTimeout(triggerAutoLogin, 50);
     return;
   }
 
-  // 2) SDK belum ready — poll 200ms × 25 = 5 saat
-  console.warn('[FOCC] SDK not ready at boot — polling...');
+  // 2) SDK belum ready — poll 200ms × 75 = 15 saat
+  //    (naik dari 25 → 75: SDK kadang ambil 8-10s di network perlahan
+  //     atau bila Tracking Prevention block; 5s terlalu pendek)
+  console.warn('[FOCC] SDK not ready at boot — polling (max 15s)...');
   let tries = 0;
-  const MAX_TRIES = 25;
+  const MAX_TRIES = 75;
   const timer = setInterval(() => {
     tries++;
 
-    // Cuba recreate kalau FOCC_SUPABASE wujud tapi tak complete
     if (window.FOCC_SUPABASE && !isAuthClientReady()){
       tryRecreateClient();
     }
 
-    // Bila auth client ready — attach listener (kalau boleh), trigger auto-login
     if (isAuthClientReady()){
       clearInterval(timer);
       console.log('[FOCC] SDK ready after', tries, 'tries (' + (tries * 200) + 'ms)');
@@ -756,7 +755,7 @@ async function initFOCC(){
     // Timeout — fallback ke session localStorage terus
     if (tries >= MAX_TRIES){
       clearInterval(timer);
-      console.warn('[FOCC] SDK tak ready selepas 5 saat — fallback ke session localStorage');
+      console.warn('[FOCC] SDK tak ready selepas 15 saat — fallback ke session localStorage');
 
       try{
         const raw = localStorage.getItem(FOCC_SESSION_KEY);

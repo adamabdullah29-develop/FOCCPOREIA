@@ -20,6 +20,16 @@
      Prevention block SDK. Ajar user cara whitelist.
    - bugBadgeStart() / bugBadgeRefresh() skip polling bila SDK
      tak ready — elak spam 401 pada console.
+
+   PATCH v6 (2026-10):
+   - foccAutoLogin(): bila SDK TAK READY selepas retry, JANGAN
+     logout. Terus foccShowApp(session) dengan cached session.
+     Punca: Tracking Prevention block SDK → getSession pulangkan
+     null walaupun token masih ada → user terlempar ke login page
+     setiap refresh. Ini yang dibetulkan.
+   - syncProviderFromSession(): JANGAN panggil
+     clearTenantRuntimeState() — fungsi itu matikan realtime channel
+     yang baru nak dimulakan. Kita cuma nak buang CACHE data.
    ========================================================================= */
 
 /* ============================================================
@@ -132,7 +142,6 @@ function foccShowApp(session){
     // ✅ FIX: catch error supaya initFOCC tak senyap gagal
     initFOCC().catch(err => {
       console.error('initFOCC failed:', err);
-      // Jangan redirect ke login — tunjuk error saja
       const content = document.getElementById('content');
       if (content){
         content.innerHTML = `
@@ -151,11 +160,9 @@ function foccShowApp(session){
   if (foccIsSdkReady()){
     foccRemoveTrackingWarning();
   } else {
-    // Tunggu initFOCC render content dulu, baru inject warning
     setTimeout(foccShowTrackingWarning, 300);
   }
 
-  // ⬇️ PATCH v5: bugBadgeStart() sekarang handle SDK check sendiri
   bugBadgeStart();
 
   if (window.foccMascot && window.foccMascot.startLogin) window.foccMascot.startLogin(session);
@@ -171,26 +178,15 @@ function foccShowApp(session){
     getSystemUpdates()
       .then(updates => {
         console.log('SYSTEM UPDATES:', updates);
-
-        const latestUpdates = updates.filter(
-          x => x.version === FOCC_VERSION
-        );
-
+        const latestUpdates = updates.filter(x => x.version === FOCC_VERSION);
         const message = latestUpdates
           .map(x => `✅ ${x.title}\n${x.description}`)
           .join('\n\n');
-
-        alert(
-          `✨ WHAT'S NEW\n\nVersion ${FOCC_VERSION}\n\n${message}`
-        );
-
+        alert(`✨ WHAT'S NEW\n\nVersion ${FOCC_VERSION}\n\n${message}`);
         updateUserVersion(session.email)
-          .then(result => {
-            console.log('VERSION UPDATED:', result);
-          });
+          .then(result => { console.log('VERSION UPDATED:', result); });
       })
       .catch(err => {
-        // Diamkan — biasa bila SDK tak ready. Bukan bug.
         console.warn('[FOCC] getSystemUpdates skip:', err && err.message);
       });
   }
@@ -225,7 +221,6 @@ async function loginFOCC(){
   foccShowLogin('Checking access\u2026', false);
 
   try{
-    /* 1) Sahkan email + password dengan Supabase Auth */
     const authRes = await FOCC_SUPABASE.auth.signInWithPassword({ email, password });
 
     if (authRes.error || !authRes.data || !authRes.data.user){
@@ -234,7 +229,6 @@ async function loginFOCC(){
       return;
     }
 
-    /* 2) Baca profile (company, role, routes, expiry) */
     const profRes = await FOCC_SUPABASE
       .from('profiles')
       .select('*')
@@ -250,7 +244,6 @@ async function loginFOCC(){
       return;
     }
 
-    /* 3) Status akaun */
     if (String(profile.status || '') !== 'Active'){
       await FOCC_SUPABASE.auth.signOut();
       localStorage.removeItem(FOCC_SESSION_KEY);
@@ -258,7 +251,6 @@ async function loginFOCC(){
       return;
     }
 
-    /* 4) Status + sheet/script URL company (sumber: Supabase companies) */
     const creds = await fetchCompanySheetCreds(profile.company_id);
 
     if (creds.status !== 'Active'){
@@ -268,7 +260,6 @@ async function loginFOCC(){
       return;
     }
 
-    /* 5) Tarikh luput */
     if (profile.expiry_date){
       const today = new Date(); today.setHours(0,0,0,0);
       const expiry = new Date(profile.expiry_date); expiry.setHours(0,0,0,0);
@@ -280,7 +271,6 @@ async function loginFOCC(){
       }
     }
 
-    /* 6) Version semasa (Supabase) — kalau gagal, JANGAN block login */
     try{
       const versionInfo = await getCurrentVersion();
       FOCC_VERSION = (versionInfo && versionInfo.currentVersion) || profile.version || '';
@@ -288,7 +278,6 @@ async function loginFOCC(){
       FOCC_VERSION = profile.version || '';
     }
 
-    /* 7) Bina session — BENTUK SAMA macam dulu */
     const routes =
       String(profile.allowed_routes || '').trim() === 'ALL'
         ? ['ALL']
@@ -346,7 +335,6 @@ async function logoutFOCC(){
   try{ localStorage.removeItem('focc-supabase-auth-token'); }catch(e){}
   try{ if (FOCC_SUPABASE) await FOCC_SUPABASE.auth.signOut(); }catch(e){}
 
-  // Satu panggilan sahaja — tunjuk login screen di akhir
   try{ foccShowLogin('', false); }catch(e){}
 }
 
@@ -379,9 +367,11 @@ function foccShowPublicScreen(){
 
    PATCH v3: guard + retry 8x @ 400ms + regex ketat + log.
    PATCH v4: skip syncProviderFromSession bila SDK tak ready.
+   PATCH v6: SDK tak ready selepas retry → showApp dengan cached
+             session (JANGAN logout). Punca: Tracking Prevention
+             block SDK → getSession pulangkan null walaupun token ada.
 ============================================================= */
 async function foccAutoLogin(){
-  // ── Guard: elak dua panggilan serentak ──
   if (foccAutoLoginRunning){
     console.log('[FOCC] autoLogin: already running — skip');
     return;
@@ -460,11 +450,21 @@ async function foccAutoLogin(){
 
     /* Kalau tiada authUser selepas retry:
        - Regex KETAT: hanya match refresh/token/jwt/session mati.
+       - Kalau SDK TAK READY langsung → ni bukan session mati, ni SDK problem.
+         Terus showApp dengan cached session (JANGAN logout).
        - Kalau SDK beri ERROR JELAS → logout betul
        - Kalau cuma network hiccup → fallback (showApp)
     */
     if (!authUser){
       const errMsg = String((sessionError && sessionError.message) || (lastErr && lastErr.message) || '');
+
+      /* ⬇️ FIX v6: SDK tak ready = bukan session invalid.
+         Tunjuk app terus dengan cached session dari localStorage. */
+      if (!foccIsSdkReady()){
+        console.warn('[FOCC] autoLogin: SDK still not ready after', MAX_TRIES, 'tries — showApp dengan cached session (JANGAN logout)');
+        foccShowApp(session);
+        return;
+      }
 
       const isSessionInvalid =
         !!sessionError &&
@@ -571,6 +571,43 @@ async function foccAutoLogin(){
     }
   } finally {
     foccAutoLoginRunning = false;
+  }
+}
+
+/* ============================================================
+   SYNC PROVIDER FROM SESSION
+   PATCH v6: JANGAN panggil clearTenantRuntimeState() di sini —
+   fungsi itu mematikan realtime channel yang baru nak dimulakan.
+   Kita cuma nak buang CACHE data (data company lama), bukan channel.
+============================================================= */
+async function syncProviderFromSession(session){
+  try{
+    /* Buang CACHE data sahaja — jangan matikan realtime */
+    Object.keys(DATA_CACHE).forEach(k => delete DATA_CACHE[k]);
+    Object.keys(DATA_VERSION).forEach(k => delete DATA_VERSION[k]);
+    if (window.IMPORT_BACKUPS){
+      Object.keys(window.IMPORT_BACKUPS).forEach(k => delete window.IMPORT_BACKUPS[k]);
+    }
+    resetServerSupabaseTablesCache();
+
+    // Start realtime (idempotent — kalau dah jalan, ia skip)
+    startFOCCRealtime();
+
+    const idOk = isValidSheetIdFormat(session && session.googleSheetId);
+    const urlOk = isValidAppsScriptUrlFormat(session && session.appsScriptUrl);
+    if (!idOk || !urlOk) return;
+
+    const cfg = await getSettingsConfig();
+    if (cfg.provider === 'sheet') return;
+
+    const nextCfg = {
+      ...cfg,
+      provider: 'sheet',
+      connectionStatus: computeConnectionStatus({googleSheetId: session.googleSheetId, appsScriptUrl: session.appsScriptUrl}),
+    };
+    await saveSettingsConfig(nextCfg);
+  }catch(e){
+    console.error('syncProviderFromSession failed', e);
   }
 }
 
@@ -970,7 +1007,6 @@ function openBugDetailModal(bug){
 
 /* ============================================================
    BUG BADGE (dot merah pada "!")
-
    PATCH v5: skip polling bila SDK tak ready — elak spam 401
              pada console bila Tracking Prevention block storage.
 ============================================================= */
@@ -997,7 +1033,6 @@ async function bugBadgeRefresh(){
   if (!isSuperAdmin()){ bugBadgeRender(0); return; }
   if (document.hidden) return;
 
-  // ⬇️ PATCH v5: skip bila SDK tak ready — elak 401 spam
   if (!foccIsSdkReady()){
     bugBadgeRender(0);
     return;
@@ -1009,13 +1044,10 @@ async function bugBadgeRefresh(){
     bugBadgeRender(list.filter(b => b.status === 'New').length);
   }catch(err){
     // Diam saja — jangan spam console bila ada hiccup
-    // console.warn('Bug badge refresh failed:', err);
   }
 }
 
 function bugBadgeStart(){
-  // ⬇️ PATCH v5: kalau SDK tak ready, jangan mula polling.
-  //    Elak spam 401 setiap 60 detik.
   if (!foccIsSdkReady()){
     console.warn('[FOCC] bugBadgeStart: SDK not ready — skip polling (elak 401 spam)');
     bugBadgeRender(0);
@@ -1034,7 +1066,6 @@ function bugBadgeStop(){
   bugBadgeRender(0);
 }
 
-/* Butang "!" (sebelah butang dark mode) */
 (function(){
   const btn = document.getElementById('bugReportToggle');
   if (!btn) return;
