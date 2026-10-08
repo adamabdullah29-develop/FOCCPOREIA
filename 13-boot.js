@@ -586,3 +586,46 @@ async function initFOCC(){
    KICKOFF — foccAutoLogin() dipanggil di 04-auth.js
    Fail ini hanya mendefinisikan fungsi; auth file yang start app.
 ============================================================= */
+
+/* ============================================================
+   FOCC AUTH STATE LISTENER
+   Reaktif bila Supabase SDK ready / token berubah.
+   Fix: bila page refresh, SDK kadang lambat load → app terus
+   trigger auto-login bila auth state ready.
+   ============================================================ */
+(function(){
+  if (!window.FOCC_SUPABASE || typeof FOCC_SUPABASE.auth.onAuthStateChange !== 'function'){
+    return;
+  }
+  let initialFired = false;
+
+  FOCC_SUPABASE.auth.onAuthStateChange((event, session) => {
+    // Skip event pertama (INITIAL_SESSION) — foccAutoLogin() dah handle
+    if (!initialFired){
+      initialFired = true;
+      return;
+    }
+
+    console.log('[FOCC] auth event:', event);
+
+    if (event === 'SIGNED_OUT'){
+      // Session habis atau logout — bersihkan state
+      try{ localStorage.removeItem(FOCC_SESSION_KEY); }catch(e){}
+      if (foccBooted){
+        foccBooted = false;
+        try{ clearTenantRuntimeState(); }catch(e){}
+        try{ bugBadgeStop(); }catch(e){}
+      }
+      foccShowPublicScreen();
+      return;
+    }
+
+    if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED'){
+      // Kalau app belum booted tapi ada token → cuba auto-login
+      if (!foccBooted && localStorage.getItem(FOCC_SESSION_KEY)){
+        console.log('[FOCC] auth ready — retry auto-login');
+        foccAutoLogin();
+      }
+    }
+  });
+})();
