@@ -346,6 +346,26 @@ async function foccAutoLogin(){
       return;
     }
 
+    /* ── PATCH v4: Kesan SDK tak ready ──
+       Kalau FOCC_SUPABASE tak wujud atau .auth tak ready, jangan cuba
+       getSession (akan fail). Terus fallback ke session localStorage.
+       Ini berlaku bila Edge/Safari Tracking Prevention block storage,
+       atau CDN jsdelivr down / partial load. */
+    const sdkReady = !!(
+      window.FOCC_SUPABASE &&
+      FOCC_SUPABASE.auth &&
+      typeof FOCC_SUPABASE.auth.getSession === 'function'
+    );
+
+    if (!sdkReady){
+      console.warn('[FOCC] autoLogin: SDK not ready — fallback ke session localStorage tanpa verify');
+      try{
+        await syncProviderFromSession(session);
+      }catch(e){ console.warn('[FOCC] syncProvider failed (non-fatal):', e); }
+      foccShowApp(session);
+      return;
+    }
+
     /* Retry getSession sampai 8 kali dengan delay 400ms
        (total 3.2s) — Supabase SDK kadang belum ready bila refresh */
     let authUser = null;
