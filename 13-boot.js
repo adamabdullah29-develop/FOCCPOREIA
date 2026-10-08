@@ -45,6 +45,17 @@ const ROUTES = {
     crumb:'Compliance',
     render: renderFegServiceHistoryPage,
   },
+    /* ---- Depot Module (Phase 2) ---- */
+  depotOverview: {
+    title: 'Depot Overview',
+    crumb: 'Depot',
+    render: renderDepotOverview,
+  },
+  depotLayout: {
+    title: 'Depot Layout',
+    crumb: 'Depot',
+    render: renderDepotLayout,
+  },
   primeMover:          { title:'Prime Mover Details', crumb:'Compliance', render: renderPrimeMoverPage },
 
   trailer:             { title:'Trailer Details', crumb:'Compliance', render: renderTrailerPage },
@@ -200,6 +211,11 @@ const NAV_STRUCTURE = [
     { label:'Knowledge Center', items:[
       {key:'apadKnowledgeCenter', label:'APAD'},
     ]},
+  ]},
+  
+    { group:'Depot Operations', dot:'#1aa39a', items:[
+    {key:'depotOverview', label:'Depot Overview'},
+    {key:'depotLayout',   label:'Depot Layout'},
   ]},
 
   { group:'Finance & Cost Control', dot:'#8a5fd1', items:[

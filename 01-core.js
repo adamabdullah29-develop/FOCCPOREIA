@@ -402,6 +402,40 @@ const TABLES = {
     ],
   },
 
+    /* ---- Depot Module (Phase 2) ---- */
+  depotLayout: {
+    label: 'Depot Layout',
+    storageKey: 'kor-depot-layout',
+    columns: [
+      {id:'layoutId', label:'Layout ID', type:'text'},
+      {id:'depotName', label:'Depot Name', type:'text'},
+      {id:'blocks', label:'Blocks (JSON)', type:'text'},
+    ],
+    seed: [],
+  },
+
+  depotContainers: {
+    label: 'Depot Containers',
+    storageKey: 'kor-depot-containers',
+    columns: [
+      {id:'containerNo', label:'Container No', type:'text'},
+      {id:'type', label:'Type', type:'select', options:['20ft Standard','40ft Standard','40ft HC','45ft']},
+      {id:'status', label:'Status', type:'badge'},
+      {id:'blockName', label:'Block', type:'text'},
+      {id:'slotNo', label:'Slot', type:'text'},
+      {id:'stackLevel', label:'Stack', type:'number'},
+      {id:'customer', label:'Customer', type:'text'},
+      {id:'jobNo', label:'Job No', type:'text'},
+      {id:'vessel', label:'Vessel', type:'text'},
+      {id:'weight', label:'Weight (kg)', type:'number'},
+      {id:'inDate', label:'In Date', type:'date'},
+      {id:'outDate', label:'Out Date', type:'date'},
+      {id:'departed', label:'Departed', type:'badge'},
+      {id:'remarks', label:'Remarks', type:'text'},
+    ],
+    seed: [],
+  },
+
   apadDocuments: {
     label: 'APAD Document',
     storageKey: 'kor-apad-documents',
@@ -844,6 +878,56 @@ function comboStorageKey(tableKey, fieldId){
   return `kor-combo-options-${tableKey}-${fieldId}`;
 }
 
+/* ============================================================
+   DEPOT MODULE — Constants (Phase 2)
+============================================================= */
+
+const DEPOT_STATUS = ['ok', 'repairing', 'damaged'];
+
+const DEPOT_STATUS_LABELS = {
+  ok: 'OK',
+  repairing: 'Repairing',
+  damaged: 'Damaged',
+};
+
+const DEPOT_STATUS_COLORS = {
+  ok: '#3f9a6e',        // green
+  repairing: '#e6a339',  // amber
+  damaged: '#d1554a',    // red
+};
+
+const DEPOT_STATUS_BADGE = {
+  ok: 'good',
+  repairing: 'warn',
+  damaged: 'bad',
+};
+
+const DEPOT_BLOCK_COLORS = [
+  '#1aa39a',  // teal
+  '#e6a339',  // amber
+  '#8a5fd1',  // purple
+  '#4f7fd1',  // blue
+  '#d1554a',  // red
+  '#3f9a6e',  // green
+];
+
+const DEPOT_DAYS_RANGES = [
+  { min: 1,  max: 3,   color: '#3f9a6e', label: '1-3d' },   // green
+  { min: 4,  max: 7,   color: '#e6a339', label: '4-7d' },   // amber
+  { min: 8,  max: 14,  color: '#e07b39', label: '8-14d' },  // orange
+  { min: 15, max: 999, color: '#d1554a', label: '15d+' },   // red
+];
+
+const DEPOT_DEFAULT_SIZES = {
+  '20ft Standard': { l: 5.90,  w: 2.35, h: 2.39, weight: 2400 },
+  '40ft Standard': { l: 12.03, w: 2.35, h: 2.39, weight: 3800 },
+  '40ft HC':       { l: 12.03, w: 2.35, h: 2.70, weight: 3900 },
+  '45ft':          { l: 13.56, w: 2.35, h: 2.69, weight: 4200 },
+};
+
+const DEPOT_DEFAULT_STACK_LIMIT = 2;
+
+const DEPOT_DEFAULT_DEPOT_ID = 'default';
 /* ---------------------------------------------------------------------
    AUTO FIELD LISTS — hidden from Add/Edit forms
 --------------------------------------------------------------------- */
